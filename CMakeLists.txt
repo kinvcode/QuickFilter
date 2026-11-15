@@ -34,6 +34,8 @@ set(HOOK_FILES
     src/hook/filterhost.cpp
     src/hook/filterhost.h
     src/hook/format.h
+    src/hook/hookcontrol.cpp
+    src/hook/hookcontrol.h
     src/hook/memprotect.h
 )
 

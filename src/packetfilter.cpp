@@ -3,7 +3,6 @@
 #include "hook/bytecode.h"
 #include "hook/cpu.h"
 #include "hook/format.h"
-#include "hook/memprotect.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -14,7 +13,6 @@ constexpr ULONG64 kRemoteBufferSize = 0x1000;
 
 // 目标发包函数的地址，需按实际特征码替换
 constexpr ULONG64 PACKET_HOOK_ADDRESS = 0x1459DB3EC;
-constexpr BOOL    USE_EPT_HOOK       = TRUE;
 
 } // namespace
 
@@ -76,7 +74,7 @@ void PacketLogModel::clear()
 }
 
 PacketFilterController::PacketFilterController(QObject* parent)
-    : FilterHost(parent)
+    : HookControl(parent)
 {
     QCoreApplication::instance()->installNativeEventFilter(this);
 }
@@ -117,75 +115,9 @@ QAbstractListModel* PacketFilterController::messages()
     return &m_messages;
 }
 
-bool PacketFilterController::prepareClose()
+ULONG64 PacketFilterController::hookAddress() const
 {
-    if (!_hook_data.is_hooked)
-        return true;
-
-    if (!unhook()) {
-        setNotice(QStringLiteral("还原HOOK或释放远程内存失败。窗口将保持打开，请确认目标进程仍在运行后重试。"));
-        return false;
-    }
-
-    setNotice(QString());
-    return true;
-}
-
-void PacketFilterController::startHook()
-{
-    if (m_processName.trimmed().isEmpty()) {
-        setNotice(QStringLiteral("请输入目标进程名"));
-        return;
-    }
-
-    if (!PeaceDriver::pingREG()) {
-        setNotice(QStringLiteral("未安装驱动！"));
-        return;
-    }
-
-    if (!PeaceDriver::is_hv_running()) {
-        setNotice(QStringLiteral("VT尚未启动，启动VT中..."));
-        if (!PeaceDriver::enableVT(true)) {
-            setNotice(QStringLiteral("VT启动失败！！！"));
-            return;
-        }
-        setNotice(QStringLiteral("VT启动完成~"));
-    }
-
-    if (_hook_data.is_hooked) {
-        setNotice(QStringLiteral("当前窗口已经启用HOOK。"));
-        return;
-    }
-
-    const DWORD target_pid = PeaceDriver::getPid(m_processName.trimmed().toStdWString().c_str());
-    if (target_pid == 0) {
-        setNotice(QStringLiteral("找不到目标进程，请检查进程ID或进程名。"));
-        return;
-    }
-
-    if (PACKET_HOOK_ADDRESS == 0) {
-        setNotice(QStringLiteral("HOOK地址尚未配置，请填写发包函数地址。"));
-        return;
-    }
-
-    ULONG meminfo = 0;
-    if (!PeaceDriver::queryMemory(target_pid, PACKET_HOOK_ADDRESS, meminfo)) {
-        setNotice(QStringLiteral("无法查询目标进程中的HOOK地址。"));
-        return;
-    }
-    if (!isExecutableProtection(meminfo)) {
-        setNotice(QStringLiteral("HOOK地址所在内存不可执行，请检查目标函数地址。"));
-        return;
-    }
-
-    qDebug() << "目标PID：" << target_pid;
-
-    if (!hook(target_pid)) {
-        setNotice(QStringLiteral("安装HOOK失败，已清理本次分配的远程内存。"));
-        return;
-    }
-
-    setNotice(QStringLiteral("HOOK已成功安装。"));
+    return PACKET_HOOK_ADDRESS;
 }
 
 bool PacketFilterController::hook(DWORD pid)
@@ -198,7 +130,7 @@ bool PacketFilterController::hook(DWORD pid)
     ULONG64  target_cr3        = 0;
 
     const auto cleanupPartial = [&]() {
-        if (USE_EPT_HOOK && ept_installed && hook_pfn != 0) {
+        if (ept_installed && hook_pfn != 0) {
             for_each_cpu([hook_pfn](uint32_t cpu_id) {
                 Q_UNUSED(cpu_id);
                 PeaceDriver::remove_ept_hook(hook_pfn);
@@ -234,53 +166,51 @@ bool PacketFilterController::hook(DWORD pid)
     qDebug() << "HOOK页面起始地址：" << QString::number(hook_page_start, 16).toUpper();
     qDebug() << "HOOK函数偏移：" << QString::number(hook_offset, 16).toUpper();
 
-    if (USE_EPT_HOOK) {
-        target_cr3 = PeaceDriver::query_process_cr3(pid);
-        if (!target_cr3) {
-            qDebug() << "cr3查询失败";
-            return false;
-        }
-        if ((target_cr3 & 0xFFF) != 0) {
-            qDebug() << "CR3值无效（未页对齐）：" << QString::number(target_cr3, 16).toUpper();
-            return false;
-        }
-
-        const uint64_t hook_phys_addr = PeaceDriver::get_physical_address(target_cr3, hook_page_ptr);
-        if (!hook_phys_addr) {
-            qDebug() << "无法获取HOOK物理页，后续操作中断";
-            return false;
-        }
-        hook_pfn = hook_phys_addr >> 12;
-        qDebug() << "HOOK物理页帧号(PFN)：" << QString::number(hook_pfn, 16).toUpper();
-
-        shadowpage_address = PeaceDriver::allocMemory(pid, kRemoteBufferSize);
-        if (shadowpage_address == 0) {
-            qDebug() << "申请影子内存失败";
-            return false;
-        }
-
-        auto hook_page_cache = std::make_unique<byte[]>(0x1000);
-        if (!PeaceDriver::readMemory(pid, static_cast<uint64_t>(hook_page_start), 0x1000, hook_page_cache.get())) {
-            qDebug() << "读取HOOK页面失败";
-            cleanupPartial();
-            return false;
-        }
-        if (!PeaceDriver::writeMemory(pid, shadowpage_address, 0x1000, hook_page_cache.get())) {
-            qDebug() << "写入影子页失败";
-            cleanupPartial();
-            return false;
-        }
-
-        const uint64_t shadow_phys_addr = PeaceDriver::get_physical_address(
-            target_cr3, reinterpret_cast<void*>(shadowpage_address));
-        if (!shadow_phys_addr) {
-            qDebug() << "无法获取影子页物理地址，后续操作中断";
-            cleanupPartial();
-            return false;
-        }
-        shadow_pfn = shadow_phys_addr >> 12;
-        qDebug() << "影子页物理页帧号(PFN)：" << QString::number(shadow_pfn, 16).toUpper();
+    target_cr3 = PeaceDriver::query_process_cr3(pid);
+    if (!target_cr3) {
+        qDebug() << "cr3查询失败";
+        return false;
     }
+    if ((target_cr3 & 0xFFF) != 0) {
+        qDebug() << "CR3值无效（未页对齐）：" << QString::number(target_cr3, 16).toUpper();
+        return false;
+    }
+
+    const uint64_t hook_phys_addr = PeaceDriver::get_physical_address(target_cr3, hook_page_ptr);
+    if (!hook_phys_addr) {
+        qDebug() << "无法获取HOOK物理页，后续操作中断";
+        return false;
+    }
+    hook_pfn = hook_phys_addr >> 12;
+    qDebug() << "HOOK物理页帧号(PFN)：" << QString::number(hook_pfn, 16).toUpper();
+
+    shadowpage_address = PeaceDriver::allocMemory(pid, kRemoteBufferSize);
+    if (shadowpage_address == 0) {
+        qDebug() << "申请影子内存失败";
+        return false;
+    }
+
+    auto hook_page_cache = std::make_unique<byte[]>(0x1000);
+    if (!PeaceDriver::readMemory(pid, static_cast<uint64_t>(hook_page_start), 0x1000, hook_page_cache.get())) {
+        qDebug() << "读取HOOK页面失败";
+        cleanupPartial();
+        return false;
+    }
+    if (!PeaceDriver::writeMemory(pid, shadowpage_address, 0x1000, hook_page_cache.get())) {
+        qDebug() << "写入影子页失败";
+        cleanupPartial();
+        return false;
+    }
+
+    const uint64_t shadow_phys_addr = PeaceDriver::get_physical_address(
+        target_cr3, reinterpret_cast<void*>(shadowpage_address));
+    if (!shadow_phys_addr) {
+        qDebug() << "无法获取影子页物理地址，后续操作中断";
+        cleanupPartial();
+        return false;
+    }
+    shadow_pfn = shadow_phys_addr >> 12;
+    qDebug() << "影子页物理页帧号(PFN)：" << QString::number(shadow_pfn, 16).toUpper();
 
     asmcode_address = PeaceDriver::allocMemory(pid, kRemoteBufferSize);
     if (asmcode_address == 0) {
@@ -372,51 +302,43 @@ bool PacketFilterController::hook(DWORD pid)
     jmp_code[11] = 0xE0;
     jmp_code[12] = 0x90;
 
-    if (USE_EPT_HOOK) {
-        const ULONG64 shadow_patch_va = shadowpage_address + hook_offset;
-        if (!PeaceDriver::writeMemory(pid, shadow_patch_va, kPacketHookCodeSize, jmp_code)) {
-            qDebug() << "写入影子页HOOK指令失败";
-            cleanupPartial();
-            return false;
-        }
-
-        const uint64_t shadow_phys_addr_after = PeaceDriver::get_physical_address(
-            target_cr3, reinterpret_cast<void*>(shadowpage_address));
-        if (!shadow_phys_addr_after) {
-            qDebug() << "patch 后无法解析影子页物理地址";
-            cleanupPartial();
-            return false;
-        }
-        shadow_pfn = shadow_phys_addr_after >> 12;
-
-        SYSTEM_INFO cpu_info = {};
-        GetSystemInfo(&cpu_info);
-        const uint32_t cpu_count = cpu_info.dwNumberOfProcessors;
-        uint32_t success_count = 0;
-
-        for_each_cpu([&](uint32_t cpu_id) {
-            if (PeaceDriver::install_ept_hook(hook_pfn, shadow_pfn))
-                ++success_count;
-            else
-                qDebug() << "EPT安装失败，CPU：" << cpu_id;
-        });
-
-        if (success_count != cpu_count) {
-            for_each_cpu([hook_pfn](uint32_t cpu_id) {
-                Q_UNUSED(cpu_id);
-                PeaceDriver::remove_ept_hook(hook_pfn);
-            });
-            cleanupPartial();
-            return false;
-        }
-        ept_installed = true;
-    } else {
-        if (!PeaceDriver::writeMemory(pid, hook_address, kPacketHookCodeSize, jmp_code)) {
-            qDebug() << "写入HOOK跳转失败";
-            cleanupPartial();
-            return false;
-        }
+    const ULONG64 shadow_patch_va = shadowpage_address + hook_offset;
+    if (!PeaceDriver::writeMemory(pid, shadow_patch_va, kPacketHookCodeSize, jmp_code)) {
+        qDebug() << "写入影子页HOOK指令失败";
+        cleanupPartial();
+        return false;
     }
+
+    const uint64_t shadow_phys_addr_after = PeaceDriver::get_physical_address(
+        target_cr3, reinterpret_cast<void*>(shadowpage_address));
+    if (!shadow_phys_addr_after) {
+        qDebug() << "patch 后无法解析影子页物理地址";
+        cleanupPartial();
+        return false;
+    }
+    shadow_pfn = shadow_phys_addr_after >> 12;
+
+    SYSTEM_INFO cpu_info = {};
+    GetSystemInfo(&cpu_info);
+    const uint32_t cpu_count = cpu_info.dwNumberOfProcessors;
+    uint32_t success_count = 0;
+
+    for_each_cpu([&](uint32_t cpu_id) {
+        if (PeaceDriver::install_ept_hook(hook_pfn, shadow_pfn))
+            ++success_count;
+        else
+            qDebug() << "EPT安装失败，CPU：" << cpu_id;
+    });
+
+    if (success_count != cpu_count) {
+        for_each_cpu([hook_pfn](uint32_t cpu_id) {
+            Q_UNUSED(cpu_id);
+            PeaceDriver::remove_ept_hook(hook_pfn);
+        });
+        cleanupPartial();
+        return false;
+    }
+    ept_installed = true;
 
     _hook_data.is_hooked = true;
     _hook_data.pid = pid;
@@ -424,50 +346,9 @@ bool PacketFilterController::hook(DWORD pid)
     _hook_data.allocated_address = asmcode_address;
     _hook_data.shadowpage_address = shadowpage_address;
     _hook_data.hook_pfn = hook_pfn;
-    if (USE_EPT_HOOK) {
-        _hook_data.target_cr3 = target_cr3;
-        _hook_data.hook_execute_patched = true;
-    }
-    memcpy(_hook_data.raw_bytecode, raw_bytecode, kPacketHookCodeSize);
+    _hook_data.target_cr3 = target_cr3;
+    _hook_data.hook_execute_patched = true;
+    _hook_data.raw_bytecode.assign(raw_bytecode, raw_bytecode + kPacketHookCodeSize);
 
-    return true;
-}
-
-bool PacketFilterController::unhook()
-{
-    if (USE_EPT_HOOK) {
-        if (_hook_data.hook_execute_patched && _hook_data.target_cr3 != 0
-            && _hook_data.hook_address != 0) {
-            PeaceDriver::write_virt_mem(_hook_data.target_cr3,
-                                        reinterpret_cast<void*>(_hook_data.hook_address),
-                                        _hook_data.raw_bytecode,
-                                        kPacketHookCodeSize);
-        }
-
-        if (_hook_data.is_hooked) {
-            if (_hook_data.hook_pfn != 0) {
-                const uint64_t hook_pfn = _hook_data.hook_pfn;
-                for_each_cpu([hook_pfn](uint32_t cpu_id) {
-                    Q_UNUSED(cpu_id);
-                    PeaceDriver::remove_ept_hook(hook_pfn);
-                });
-            }
-            _hook_data.is_hooked = false;
-        }
-
-        if (_hook_data.shadowpage_address != 0) {
-            if (!PeaceDriver::freeMemory(_hook_data.pid, _hook_data.shadowpage_address))
-                return false;
-            _hook_data.shadowpage_address = 0;
-        }
-    }
-
-    if (_hook_data.allocated_address != 0) {
-        if (!PeaceDriver::freeMemory(_hook_data.pid, _hook_data.allocated_address))
-            return false;
-        _hook_data.allocated_address = 0;
-    }
-
-    _hook_data = {};
     return true;
 }

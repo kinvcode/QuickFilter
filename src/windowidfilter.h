@@ -1,6 +1,6 @@
 #pragma once
 
-#include "hook/filterhost.h"
+#include "hook/hookcontrol.h"
 
 #include <QAbstractListModel>
 #include <QAbstractNativeEventFilter>
@@ -75,7 +75,7 @@ private:
     std::vector<Row> m_rows;
 };
 
-class WindowIdFilterController : public FilterHost, public QAbstractNativeEventFilter
+class WindowIdFilterController : public HookControl, public QAbstractNativeEventFilter
 {
     Q_OBJECT
     QML_ELEMENT
@@ -90,8 +90,6 @@ public:
     QAbstractListModel* messages();
 
     Q_INVOKABLE void setFilterActive(int row, bool active);
-    Q_INVOKABLE void startHook();
-    Q_INVOKABLE bool prepareClose();
 
 protected:
     bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override;
@@ -99,22 +97,9 @@ protected:
 private:
     void handleWindowIdMessage(quint32 windowId, quint64 retAddress);
 
+    ULONG64 hookAddress() const override;
+    bool hook(DWORD pid) override;
+
     FilterCatalogModel m_filters;
     MessageLogModel m_messages;
-
-private:
-    struct HOOKDATA{
-        bool is_hooked = false;
-        DWORD pid = 0;
-        ULONG64 hook_address = 0;
-        ULONG64 allocated_address = 0;
-        ULONG64 shadowpage_address = 0;
-        uint64_t hook_pfn = 0;
-        ULONG64 target_cr3 = 0;
-        bool hook_execute_patched = false;
-        BYTE raw_bytecode[kHookCodeSize] = {0};
-    }_hook_data;
-
-    bool hook(DWORD pid);
-    bool unhook();
 };
