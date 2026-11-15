@@ -102,12 +102,14 @@ public:
         QString time;
         QString kind;
         QString title;
+        QString returnAddress;
     };
 
     enum Roles {
         TimeRole = Qt::UserRole + 1,
         KindRole,
-        TitleRole
+        TitleRole,
+        ReturnAddressRole
     };
 
     explicit MessageLogModel(QObject* parent = nullptr);
@@ -116,7 +118,7 @@ public:
     QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
     QHash<int, QByteArray> roleNames() const override;
 
-    void append(const QString& time, const QString& kind, const QString& title);
+    void append(const QString& time, const QString& kind, const QString& title, const QString& returnAddress);
     void clear();
 
 private:
@@ -156,7 +158,7 @@ protected:
 
 private:
     void setNotice(const QString& notice);
-    void handleWindowIdMessage(quint32 windowId);
+    void handleWindowIdMessage(quint32 windowId, quint64 retAddress);
 
     QString m_processName = QStringLiteral("DFO.exe");
     QString m_notice;

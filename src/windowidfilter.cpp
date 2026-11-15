@@ -161,6 +161,8 @@ QVariant MessageLogModel::data(const QModelIndex& index, int role) const
     case TitleRole:
     case Qt::DisplayRole:
         return row.title;
+    case ReturnAddressRole:
+        return row.returnAddress;
     default:
         return {};
     }
@@ -172,14 +174,15 @@ QHash<int, QByteArray> MessageLogModel::roleNames() const
         {TimeRole, "time"},
         {KindRole, "kind"},
         {TitleRole, "title"},
+        {ReturnAddressRole, "returnAddress"},
     };
 }
 
-void MessageLogModel::append(const QString& time, const QString& kind, const QString& title)
+void MessageLogModel::append(const QString& time, const QString& kind, const QString& title, const QString& returnAddress)
 {
     const int row = rowCount();
     beginInsertRows(QModelIndex(), row, row);
-    m_rows.push_back({time, kind, title});
+    m_rows.push_back({time, kind, title, returnAddress});
     endInsertRows();
 }
 
@@ -214,14 +217,14 @@ bool WindowIdFilterController::nativeEventFilter(const QByteArray& eventType, vo
     if (!msg || msg->message != WM_MY_CUSTOM_MESSAGE)
         return false;
 
-    handleWindowIdMessage(static_cast<quint32>(msg->lParam));
+    handleWindowIdMessage(static_cast<quint32>(msg->lParam), static_cast<quint64>(msg->wParam));
 
     if (result)
         *result = 0;
     return true;
 }
 
-void WindowIdFilterController::handleWindowIdMessage(quint32 windowId)
+void WindowIdFilterController::handleWindowIdMessage(quint32 windowId, quint64 retAddress)
 {
     qDebug() << "[MSG] 收到 WM_MY_CUSTOM_MESSAGE lParam=0x"
              << QString::number(windowId, 16).toUpper();
@@ -233,7 +236,8 @@ void WindowIdFilterController::handleWindowIdMessage(quint32 windowId)
     m_messages.append(
         QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss.zzz")),
         formatId(windowId),
-        m_filters.nameForId(windowId));
+        m_filters.nameForId(windowId),
+        QStringLiteral("0x%1").arg(retAddress, 16, 16, QChar('0')).toUpper());
 }
 
 QString WindowIdFilterController::processName() const
@@ -570,8 +574,10 @@ bool WindowIdFilterController::hook(DWORD pid)
     asmData = asmData + makeByteArray({0x48, 0x83, 0xEC, 0x28});    // sub rsp, 0x28 → RSP ≡ 0 (mod 16)
 
     // hook后的实际逻辑
+    // 读取返回上个函数的地址，rsp + 0x28 + 0x80,rsp + 0xA8
+    asmData = asmData + makeByteArray({0x4C, 0x8B, 0x84, 0x24, 0xA8, 0x00, 0x00, 0x00});    // mov r8, qword ptr [rsp+0xA8]
     asmData = asmData + makeByteArray({0x4C, 0x8B, 0xCA});                                  // mov r9, rdx // 数据指针传给参数4
-    asmData = asmData + makeByteArray({0x4D, 0x31, 0xC0});                                  // xor r8, r8
+    // asmData = asmData + makeByteArray({0x4D, 0x31, 0xC0});                                  // xor r8, r8
     asmData = asmData + makeByteArray({0x48, 0xBA}) + longToBytes(WM_MY_CUSTOM_MESSAGE);    // mov rdx,消息类型
     asmData = asmData + makeByteArray({0x48, 0xB9}) + longToBytes(my_window_handle);        // mov rcx,窗口句柄
     asmData = asmData + makeByteArray({0x48, 0xB8}) + longToBytes(PostMessageA);            // mov rax, PostMessageA

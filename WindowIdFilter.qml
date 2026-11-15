@@ -80,12 +80,18 @@ ApplicationWindow {
         color: "#122033"
         implicitHeight: 32
         function columnWidth(index) {
-            if (index < widths.length)
-                return widths[index]
+            let stretch = titles.length - 1
             let used = 0
-            for (let i = 0; i < widths.length; ++i)
-                used += widths[i]
-            return Math.max(40, width - used)
+            for (let i = 0; i < titles.length; ++i) {
+                const fixed = i < widths.length ? widths[i] : -1
+                if (fixed < 0)
+                    stretch = i
+                else
+                    used += fixed
+            }
+            if (index === stretch)
+                return Math.max(40, width - used)
+            return widths[index]
         }
         Row {
             anchors.fill: parent
@@ -222,8 +228,8 @@ ApplicationWindow {
                         spacing: 0
                         TableHeader {
                             Layout.fillWidth: true
-                            titles: ["时间", "窗口类型", "窗口名称"]
-                            widths: [140, 140]
+                            titles: ["时间", "窗口类型", "窗口名称", "返回地址"]
+                            widths: [140, 140, -1, 168]
                         }
                         ListView {
                             id: messageView
@@ -238,6 +244,7 @@ ApplicationWindow {
                                 required property string time
                                 required property string kind
                                 required property string title
+                                required property string returnAddress
                                 required property int index
                                 width: ListView.view.width
                                 height: 28
@@ -265,7 +272,7 @@ ApplicationWindow {
                                         font.pixelSize: 12
                                     }
                                     Text {
-                                        width: parent.width - 280
+                                        width: Math.max(40, parent.width - 448)
                                         height: 28
                                         leftPadding: 8
                                         text: title
@@ -273,6 +280,17 @@ ApplicationWindow {
                                         verticalAlignment: Text.AlignVCenter
                                         elide: Text.ElideRight
                                         font.pixelSize: 12
+                                    }
+                                    Text {
+                                        width: 168
+                                        height: 28
+                                        leftPadding: 8
+                                        text: returnAddress
+                                        color: "#e7f2ff"
+                                        verticalAlignment: Text.AlignVCenter
+                                        elide: Text.ElideRight
+                                        font.pixelSize: 12
+                                        font.family: "Consolas"
                                     }
                                 }
                             }

@@ -97,3 +97,20 @@ install(TARGETS appQuickFilter
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+# 每次链接完成后把 Qt 运行库、插件和 QML 模块复制到 exe 同目录
+if (WIN32)
+    get_target_property(_qt_qmake Qt6::qmake IMPORTED_LOCATION)
+    get_filename_component(_qt_bin_dir "${_qt_qmake}" DIRECTORY)
+    find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS "${_qt_bin_dir}" REQUIRED)
+
+    add_custom_command(TARGET appQuickFilter POST_BUILD
+        COMMAND "${WINDEPLOYQT_EXECUTABLE}"
+            "$<IF:$<CONFIG:Debug>,--debug,--release>"
+            --qmldir "${CMAKE_CURRENT_SOURCE_DIR}"
+            --compiler-runtime
+            "$<TARGET_FILE:appQuickFilter>"
+        COMMENT "windeployqt: 打包 Qt 依赖"
+        VERBATIM
+    )
+endif()
