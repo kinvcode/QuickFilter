@@ -1,7 +1,5 @@
 #include "windowidfilter.h"
-#include "driver/PeaceDriverAPI.h"
 #include "hook/bytecode.h"
-#include "hook/cpu.h"
 #include "hook/format.h"
 
 #include <QCoreApplication>
@@ -9,7 +7,6 @@
 
 namespace {
 
-constexpr ULONG64 kRemoteBufferSize = 0x1000;
 constexpr ULONG64 HOOK_ADDRESS = 0x1466CCE00;
 
 QString formatId(quint32 id)
@@ -227,7 +224,17 @@ ULONG64 WindowIdFilterController::hookAddress() const
     return HOOK_ADDRESS;
 }
 
-bool WindowIdFilterController::hook(DWORD pid)
+size_t WindowIdFilterController::hookCodeSize() const
+{
+    return kHookCodeSize;
+}
+
+bool WindowIdFilterController::releaseRemoteOnMissingWindow() const
+{
+    return false;
+}
+
+std::vector<BYTE> WindowIdFilterController::buildTrampoline(const HookTrampolineInput& in)
 {
     /**
  HOOK函数入口位置反汇编
@@ -237,148 +244,11 @@ bool WindowIdFilterController::hook(DWORD pid)
  89 50 10              - mov [rax+10],edx { 窗口ID }
 **/
 
-    ULONG64   shadowpage_address  = 0;
-    ULONG64   asmcode_address     = 0;
-    uint64_t  hook_pfn            = 0;
-    uint64_t  shadow_pfn          = 0;
-    bool      ept_installed       = false;
-    ULONG64   target_cr3          = 0;
+    const UINT_PTR my_window_handle = in.windowHandle;
+    const ULONG64 PostMessageA = in.postMessage;
+    const ULONG64 hook_address = in.hookAddress;
 
-    const auto cleanupPartial = [&]() {
-        if (ept_installed && hook_pfn != 0) {
-            for_each_cpu([hook_pfn](uint32_t cpu_id) {
-                Q_UNUSED(cpu_id);
-                PeaceDriver::remove_ept_hook(hook_pfn);
-            });
-            ept_installed = false;
-        }
-        if (asmcode_address != 0) {
-            PeaceDriver::freeMemory(pid, asmcode_address);
-            asmcode_address = 0;
-        }
-        if (shadowpage_address != 0) {
-            PeaceDriver::freeMemory(pid, shadowpage_address);
-            shadowpage_address = 0;
-        }
-    };
-
-    // 找出目标进程，user32模块PostMessageA函数地址
-    const ULONG64 moduleBase = PeaceDriver::getModuleBase(pid, L"user32.dll");
-    if(moduleBase == 0){
-        qDebug() << "模块基址未找到";
-        return false;
-    }
-
-    const ULONG64 PostMessageA = PeaceDriver::getModuleExport(pid, moduleBase, "PostMessageA");
-    if(PostMessageA == 0){
-        qDebug() << "PostMessageA基址未找到";
-        return false;
-    }
-
-    ULONG64 hook_address = HOOK_ADDRESS; // 依靠特征码
-    // 计算HOOK页面的地址和hook位置偏移
-    uintptr_t hook_page_start  = hook_address & ~0xFFF;
-    void*     hook_page_ptr    = reinterpret_cast<void*>(hook_page_start);
-    uintptr_t hook_offset      = hook_address - reinterpret_cast<uintptr_t>(hook_page_ptr);
-    qDebug() << "HOOK页面起始地址：" << QString::number((uint64_t)hook_page_ptr,16).toUpper();
-    qDebug() << "HOOK函数偏移："    << QString::number((uint64_t)hook_offset,16).toUpper();
-
-    // 读取目标程序CR3
-    target_cr3 = PeaceDriver::query_process_cr3(pid);
-    if(!target_cr3){
-        qDebug() << "cr3查询失败";
-        return false;
-    }
-
-    if ((target_cr3 & 0xFFF) != 0) {
-        qDebug() << "CR3值无效（未页对齐）：" << QString::number(target_cr3,16).toUpper();
-        return false;
-    }
-
-    // 获取HOOK页面的物理地址（使用页面对齐的地址）
-    uint64_t hook_phys_addr = PeaceDriver::get_physical_address(target_cr3, hook_page_ptr);
-    if (!hook_phys_addr) {
-        qDebug() << "无法获取HOOK物理页，后续操作中断";
-        return false;
-    }
-    qDebug() << "HOOK物理地址：" << QString::number(hook_phys_addr,16).toUpper();
-
-    hook_pfn = hook_phys_addr >> 12;
-    qDebug() << "HOOK物理页帧号(PFN)：" << QString::number(hook_pfn,16).toUpper();
-
-    // 在目标进程中申请一段内存，作为影子页
-    shadowpage_address = PeaceDriver::allocMemory(pid, kRemoteBufferSize);
-    if(shadowpage_address == 0){
-        qDebug() << "申请影子内存失败";
-        return false;
-    }
-
-    qDebug() << "申请影子空间：" << QString::number(shadowpage_address,16).toUpper();
-
-    // 复制数据到影子页
-    auto hook_page_cache = std::make_unique<byte[]>(0x1000);
-    if (!PeaceDriver::readMemory(pid, reinterpret_cast<uint64_t>(hook_page_ptr), 0x1000, hook_page_cache.get())) {
-        qDebug() << "读取HOOK页面失败";
-        cleanupPartial();
-        return false;
-    }
-
-    qDebug() << "准备复制页面数据";
-    if (!PeaceDriver::writeMemory(pid, shadowpage_address, 0x1000, hook_page_cache.get())) {
-        qDebug() << "写入影子页失败";
-        cleanupPartial();
-        return false;
-    }
-
-    // 获取影子页的物理帧
-    uint64_t shadow_phys_addr = PeaceDriver::get_physical_address(target_cr3, reinterpret_cast<void*>(shadowpage_address));
-    if (!shadow_phys_addr) {
-        qDebug() << "无法获取影子页物理地址，后续操作中断";
-        cleanupPartial();
-        return false;
-    }
-    qDebug() << "影子页物理地址：" << QString::number(shadow_phys_addr,16).toUpper();
-    shadow_pfn = shadow_phys_addr >> 12;
-    qDebug() << "影子页物理页帧号(PFN)：" << QString::number(shadow_pfn,16).toUpper();
-
-    // 创建汇编函数执行页
-    // 在目标进程中申请一段内存
-    asmcode_address = PeaceDriver::allocMemory(pid, kRemoteBufferSize);
-    if(asmcode_address == 0){
-        qDebug() << "申请汇编内存失败";
-        cleanupPartial();
-        return false;
-    }
-
-    qDebug() << "申请汇编空间：" << QString::number(asmcode_address,16).toUpper();
-
-    // 需要保存HOOK位置原始字节码
-    BYTE raw_bytecode[kHookCodeSize] = {0};
-    const bool read_res = PeaceDriver::readMemory(pid, hook_address, kHookCodeSize, raw_bytecode);
-    if(!read_res){
-        qDebug() << "读取HOOK原始字节码失败";
-        cleanupPartial();
-        return false;
-    }
-
-    // 转字节容器
-    std::vector<byte> raw_bytearray;
-    raw_bytearray.resize(kHookCodeSize);
-    for (int i = 0; i < kHookCodeSize; i++)
-    {
-        raw_bytearray[i] = raw_bytecode[i];
-    }
-
-    // 句柄属于 QML 窗口，不属于这个 QObject 控制器
-    const HWND hwnd = hostWindowHandle();
-    if (!hwnd) {
-        qDebug() << "未取得QML窗口句柄";
-        return false;
-    }
-    UINT_PTR my_window_handle = reinterpret_cast<UINT_PTR>(hwnd);
-
-    // 构造PostMessageA函数汇编
-    std::vector<byte>asmData;
+    std::vector<byte> asmData;
 
     asmData = asmData + makeByteArray({0x9C});                      // pushfq
     asmData = asmData + makeByteArray({0x50});                      // push rax
@@ -426,96 +296,12 @@ bool WindowIdFilterController::hook(DWORD pid)
     asmData = asmData + makeByteArray({0x58});                      // pop rax
     asmData = asmData + makeByteArray({0x9D});                      // popfq
 
-    // 执行被覆盖指令，然后跳回hook继续执行
-    asmData = asmData + makeByteArray({0x48, 0x8B, 0xC4});          // mov rax, rsp
-    asmData = asmData + makeByteArray({0x4C, 0x89, 0x48, 0x20});    // mov [rax+0x20], r9
-    asmData = asmData + makeByteArray({0x4C, 0x89, 0x40, 0x18});    // mov [rax+0x18], r8
-    asmData = asmData + makeByteArray({0x89, 0x50, 0x10});          // mov [rax+0x10], edx
+    // 重放被覆盖的原始指令，必须与目标地址处实际指令一致
+    for (size_t i = 0; i < in.codeSize; ++i)
+        asmData.push_back(in.rawBytecode[i]);
+
     asmData = asmData + makeByteArray({0xFF, 0x25, 0x00, 0x00, 0x00, 0x00});	// jmp [rip+0]
-    asmData = asmData + longToBytes(hook_address + kHookCodeSize);              // hook位置,kHookCodeSize是覆盖指令的大小
+    asmData = asmData + longToBytes(hook_address + in.codeSize);              // hook位置,kHookCodeSize是覆盖指令的大小
 
-
-    // 写入汇编，HOOK启动
-    if (!PeaceDriver::writeMemory(pid, asmcode_address, asmData.size(), asmData.data())) {
-        qDebug() << "写入汇编失败~";
-        cleanupPartial();
-        return false;
-    }
-
-    // 构造JMP指令，跳转到我们的代码
-    // 使用 mov rax, imm64; jmp rax，避免 FF 25 在同页再读 8 字节：
-    // EPT 下执行常走影子页、读常走原页，RIP 相对寻址会读到未 patch 的原页数据。
-    BYTE jmp_code[kHookCodeSize] = {0};
-    jmp_code[0] = 0x48;
-    jmp_code[1] = 0xB8;
-    const ULONG64 jmp_address = asmcode_address;
-    memcpy(&jmp_code[2], &jmp_address, 8);
-    jmp_code[10] = 0xFF;
-    jmp_code[11] = 0xE0;
-    jmp_code[12] = 0x90;
-    jmp_code[13] = 0x90;
-
-    // 影子页HOOK位置
-    const ULONG64 shadow_patch_va = shadowpage_address + hook_offset;
-
-    // 影子页开启HOOK
-    if (!PeaceDriver::writeMemory(pid, shadow_patch_va, kHookCodeSize, jmp_code)) {
-        qDebug() << "写入影子页HOOK指令失败";
-        cleanupPartial();
-        return false;
-    }
-
-    // 影子页物理地址
-    uint64_t shadow_phys_addr_after = PeaceDriver::get_physical_address(target_cr3, reinterpret_cast<void*>(shadowpage_address));
-    if (!shadow_phys_addr_after) {
-        qDebug() << "patch 后无法解析影子页物理地址";
-        cleanupPartial();
-        return false;
-    }
-    // 影子页物理帧
-    shadow_pfn = shadow_phys_addr_after >> 12;
-
-    qDebug() << "开始安装EPT HOOK";
-
-    // 查询CPU信息
-    SYSTEM_INFO cpu_info = {};
-    GetSystemInfo(&cpu_info);
-    const uint32_t cpu_count = cpu_info.dwNumberOfProcessors;
-    uint32_t success_count = 0;
-
-    // 在每一个CPU上面安装EPT HOOK
-    for_each_cpu([&](uint32_t cpu_id) {
-        // 交换hook页和影子页实现【读、执行】分离策略
-        if (PeaceDriver::install_ept_hook(hook_pfn, shadow_pfn)) {
-            qDebug() << "EPT安装成功，CPU：" + QString::number(cpu_id);
-            ++success_count;
-        } else {
-            qDebug() << "EPT安装失败，CPU：" + QString::number(cpu_id);
-        }
-    });
-
-    // 如果安装EPT失败，则回滚
-    if (success_count != cpu_count) {
-        for_each_cpu([hook_pfn](uint32_t cpu_id) {
-            Q_UNUSED(cpu_id);
-            PeaceDriver::remove_ept_hook(hook_pfn);
-        });
-        cleanupPartial();
-        return false;
-    }
-
-    qDebug() << "EPT HOOK安装完毕";
-    ept_installed = true;
-
-    _hook_data.is_hooked = true;
-    _hook_data.pid = pid;
-    _hook_data.hook_address = hook_address;
-    _hook_data.allocated_address = asmcode_address;
-    _hook_data.shadowpage_address = shadowpage_address;
-    _hook_data.hook_pfn = hook_pfn;
-    _hook_data.target_cr3 = target_cr3;
-    _hook_data.hook_execute_patched = true;
-    _hook_data.raw_bytecode.assign(raw_bytecode, raw_bytecode + kHookCodeSize);
-
-    return true;
+    return asmData;
 }

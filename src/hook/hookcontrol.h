@@ -18,7 +18,16 @@ struct HookData {
     std::vector<BYTE> raw_bytecode;
 };
 
-// 安装前检查、卸载和关闭确认。跳板字节仍由子类的 hook() 构造
+// 子类构造跳板时能用到的远程信息
+struct HookTrampolineInput {
+    ULONG64 hookAddress = 0;
+    ULONG64 postMessage = 0;
+    UINT_PTR windowHandle = 0;
+    const BYTE* rawBytecode = nullptr;
+    size_t codeSize = 0;
+};
+
+// 安装前检查、EPT 安装、卸载和关闭确认。跳板字节仍由子类构造
 class HookControl : public FilterHost
 {
     Q_OBJECT
@@ -31,8 +40,12 @@ public:
 
 protected:
     virtual ULONG64 hookAddress() const = 0;
-    virtual bool hook(DWORD pid) = 0;
+    virtual size_t hookCodeSize() const = 0;
+    // 句柄取失败时，发包过滤释放已申请的远程内存；窗口 ID 过滤保持不释放
+    virtual bool releaseRemoteOnMissingWindow() const = 0;
+    virtual std::vector<BYTE> buildTrampoline(const HookTrampolineInput& in) = 0;
 
+    bool hook(DWORD pid);
     bool unhook();
 
     HookData _hook_data;

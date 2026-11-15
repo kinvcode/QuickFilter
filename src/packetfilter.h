@@ -62,7 +62,9 @@ private:
     void handlePacketMessage(quint64 pointer);
 
     ULONG64 hookAddress() const override;
-    bool hook(DWORD pid) override;
+    size_t hookCodeSize() const override;
+    bool releaseRemoteOnMissingWindow() const override;
+    std::vector<BYTE> buildTrampoline(const HookTrampolineInput& in) override;
 
     quint32 m_sequence = 0;
     PacketLogModel m_messages;

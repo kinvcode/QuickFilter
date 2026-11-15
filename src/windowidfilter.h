@@ -98,7 +98,9 @@ private:
     void handleWindowIdMessage(quint32 windowId, quint64 retAddress);
 
     ULONG64 hookAddress() const override;
-    bool hook(DWORD pid) override;
+    size_t hookCodeSize() const override;
+    bool releaseRemoteOnMissingWindow() const override;
+    std::vector<BYTE> buildTrampoline(const HookTrampolineInput& in) override;
 
     FilterCatalogModel m_filters;
     MessageLogModel m_messages;
