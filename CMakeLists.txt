@@ -31,13 +31,15 @@ set(VMP_FILES
 set(FILTER_FILES
     src/windowidfilter.cpp
     src/windowidfilter.h
+    src/packetfilter.cpp
+    src/packetfilter.h
 )
 
 set(QML_FILES
     Main.qml
     NeonButton.qml
-    BlankWindow.qml
     WindowIdFilter.qml
+    PacketFilter.qml
 )
 
 qt_add_executable(appQuickFilter

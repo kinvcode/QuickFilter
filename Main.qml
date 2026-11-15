@@ -49,7 +49,7 @@ ApplicationWindow {
         notice = ""
     }
 
-    function destroyBlankWindows() {
+    function destroyWindows() {
         const slots = windowSlots
         for (const key in slots) {
             if (slots[key])
@@ -59,7 +59,7 @@ ApplicationWindow {
     }
 
     onClosing: function(close) {
-        destroyBlankWindows()
+        destroyWindows()
         close.accepted = true
     }
 
@@ -103,19 +103,20 @@ ApplicationWindow {
             NeonButton {
                 Layout.fillWidth: true
                 implicitHeight: 64
-                text: "按钮测试"
-                primary: true
-                font.pixelSize: 18
-                onClicked: root.showWindow("test1", "BlankWindow.qml", text)
-            }
-            NeonButton {
-                Layout.fillWidth: true
-                implicitHeight: 64
                 text: "窗口ID过滤"
                 primary: true
                 accent: "#ffb020"
                 font.pixelSize: 18
                 onClicked: root.showWindow("windowId", "WindowIdFilter.qml", text)
+            }
+            NeonButton {
+                Layout.fillWidth: true
+                implicitHeight: 64
+                text: "发包过滤"
+                primary: true
+                accent: "#5ee0a0"
+                font.pixelSize: 18
+                onClicked: root.showWindow("packet", "PacketFilter.qml", text)
             }
             Text {
                 Layout.fillWidth: true

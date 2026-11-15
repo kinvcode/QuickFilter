@@ -1,0 +1,10 @@
+---
+description: 新增源码后先读 .gitignore 再 git add
+alwaysApply: true
+---
+# 新增源码必须纳入暂存区
+完成新增或拆分出的**项目源码**后（含 `.cpp`、`.h`、`.qml`、`CMakeLists.txt` 等），在同一轮任务末尾：
+1. **先读取** 项目根目录的 `.gitignore`，确认哪些路径不得 `git add`（例如本项目的 `build/`）。
+2. **再执行** `git add`，只加入应纳入版本库的文件；不要添加被忽略目录下的产物。
+3. 若当前目录不是 git 仓库，或用户明确说不要动 git，则跳过。
+不要替用户 `git commit`，除非用户明确要求提交。
