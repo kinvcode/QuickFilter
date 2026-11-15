@@ -28,10 +28,16 @@ set(VMP_FILES
     vmp/VMProtectSDK.h
 )
 
+set(FILTER_FILES
+    src/windowidfilter.cpp
+    src/windowidfilter.h
+)
+
 set(QML_FILES
     Main.qml
     NeonButton.qml
     BlankWindow.qml
+    WindowIdFilter.qml
 )
 
 qt_add_executable(appQuickFilter
@@ -45,9 +51,11 @@ qt_add_qml_module(appQuickFilter
     URI QuickFilter
     VERSION 1.0
     QML_FILES ${QML_FILES}
+    SOURCES ${FILTER_FILES}
 )
 
 source_group("app" FILES ${APP_FILES})
+source_group("src" FILES ${FILTER_FILES})
 source_group("driver" FILES ${DRIVER_FILES})
 source_group("helper" FILES ${HELPER_FILES})
 source_group("vmp" FILES ${VMP_FILES})
@@ -66,6 +74,7 @@ set_target_properties(appQuickFilter PROPERTIES
 
 target_include_directories(appQuickFilter PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 
 # 不用 $<CONFIG:...:D:/...>：生成器表达式用冒号分段，盘符会被截断成 /library/...

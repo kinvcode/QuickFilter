@@ -19,7 +19,7 @@ ApplicationWindow {
     property var windowSlots: ({})
 
     // key 对应一种窗口。已有实例只激活，不重复创建
-    function showBlankWindow(key, title) {
+    function showWindow(key, file, title) {
         const existing = windowSlots[key]
         if (existing) {
             existing.show()
@@ -28,7 +28,7 @@ ApplicationWindow {
             return
         }
 
-        const component = Qt.createComponent("BlankWindow.qml")
+        const component = Qt.createComponent(file)
         if (component.status !== Component.Ready) {
             notice = component.errorString()
             return
@@ -106,25 +106,16 @@ ApplicationWindow {
                 text: "按钮测试"
                 primary: true
                 font.pixelSize: 18
-                onClicked: root.showBlankWindow("test1", text)
+                onClicked: root.showWindow("test1", "BlankWindow.qml", text)
             }
             NeonButton {
                 Layout.fillWidth: true
                 implicitHeight: 64
-                text: "测试按钮2"
+                text: "窗口ID过滤"
                 primary: true
-                accent: "#b388ff"
+                accent: "#ffb020"
                 font.pixelSize: 18
-                onClicked: root.showBlankWindow("test2", text)
-            }
-            NeonButton {
-                Layout.fillWidth: true
-                implicitHeight: 64
-                text: "测试按钮3"
-                primary: true
-                accent: "#5ee0a0"
-                font.pixelSize: 18
-                onClicked: root.showBlankWindow("test3", text)
+                onClicked: root.showWindow("windowId", "WindowIdFilter.qml", text)
             }
             Text {
                 Layout.fillWidth: true
