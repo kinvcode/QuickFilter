@@ -112,7 +112,7 @@ ApplicationWindow {
             NeonButton {
                 Layout.fillWidth: true
                 implicitHeight: 64
-                text: "发包过滤"
+                text: "收包过滤"
                 primary: true
                 accent: "#5ee0a0"
                 font.pixelSize: 18

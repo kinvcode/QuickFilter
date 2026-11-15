@@ -9,7 +9,7 @@ ApplicationWindow {
     minimumWidth: 860
     minimumHeight: 560
     visible: false
-    title: "发包过滤"
+    title: "收包过滤"
     color: "#07101c"
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowSystemMenuHint | Qt.WindowMinimizeButtonHint
     font.family: "Microsoft YaHei UI"
@@ -132,7 +132,7 @@ ApplicationWindow {
                 anchors.fill: parent
                 anchors.leftMargin: 14
                 anchors.rightMargin: 8
-                Text { text: "发包过滤"; color: "#e7f2ff"; font.pixelSize: 14 }
+                Text { text: "收包过滤"; color: "#e7f2ff"; font.pixelSize: 14 }
                 Item { Layout.fillWidth: true }
                 NeonButton { text: "—"; implicitWidth: 36; onClicked: win.showMinimized() }
                 NeonButton { text: "×"; accent: "#ff4fd8"; implicitWidth: 36; onClicked: win.close() }
