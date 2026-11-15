@@ -1,10 +1,13 @@
 #include "windowidfilter.h"
 #include "driver/PeaceDriverAPI.h"
 
+#include <QCoreApplication>
+#include <QDateTime>
+
 namespace {
 
 constexpr ULONG64 kRemoteBufferSize = 0x1000;
-constexpr ULONG64 HOOK_ADDRESS      = 0x1466640E0;
+constexpr ULONG64 HOOK_ADDRESS      = 0x1466CCE00;
 constexpr BOOL    USE_EPT_HOOK      = TRUE;
 
 bool isExecutableProtection(ULONG protection)
@@ -192,6 +195,45 @@ void MessageLogModel::clear()
 WindowIdFilterController::WindowIdFilterController(QObject* parent)
     : QObject(parent)
 {
+    QCoreApplication::instance()->installNativeEventFilter(this);
+}
+
+WindowIdFilterController::~WindowIdFilterController()
+{
+    if (QCoreApplication* app = QCoreApplication::instance())
+        app->removeNativeEventFilter(this);
+}
+
+bool WindowIdFilterController::nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result)
+{
+    // QML 窗口是 QQuickWindow，拿不到可覆写的 nativeEvent，只能在这里收原生消息
+    if (eventType != "windows_generic_MSG")
+        return false;
+
+    const MSG* msg = static_cast<const MSG*>(message);
+    if (!msg || msg->message != WM_MY_CUSTOM_MESSAGE)
+        return false;
+
+    handleWindowIdMessage(static_cast<quint32>(msg->lParam));
+
+    if (result)
+        *result = 0;
+    return true;
+}
+
+void WindowIdFilterController::handleWindowIdMessage(quint32 windowId)
+{
+    qDebug() << "[MSG] 收到 WM_MY_CUSTOM_MESSAGE lParam=0x"
+             << QString::number(windowId, 16).toUpper();
+
+    // 勾选了过滤的窗口 ID 不记录
+    if (m_filters.isActive(windowId))
+        return;
+
+    m_messages.append(
+        QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss.zzz")),
+        formatId(windowId),
+        m_filters.nameForId(windowId));
 }
 
 QString WindowIdFilterController::processName() const
@@ -254,9 +296,21 @@ void WindowIdFilterController::startHook()
         return;
     }
 
-    if(!PeaceDriver::is_hv_running()){
+    if(!PeaceDriver::pingREG()){
         setNotice(QStringLiteral("未安装驱动！"));
         return;
+    }
+
+    if(!PeaceDriver::is_hv_running())
+    {
+        setNotice(QStringLiteral("VT尚未启动，启动VT中..."));
+        if(!PeaceDriver::enableVT(true))
+        {
+            setNotice(QStringLiteral("VT启动失败！！！"));
+            return;
+        }else{
+            setNotice(QStringLiteral("VT启动完成~"));
+        }
     }
 
     if(_hook_data.is_hooked)
@@ -311,11 +365,10 @@ void WindowIdFilterController::startHook()
         return;
     }
 
-    // ui->lineEdit_processId->setEnabled(false);
-    // ui->pushButton_startHook->setEnabled(false);
-    // setNotice(QStringLiteral("HOOK已成功安装。"));
+    // 禁用编辑框
+    // 禁用开始HOOK按钮
 
-    setNotice(QStringLiteral("未能开发后续逻辑"));
+    setNotice(QStringLiteral("HOOK已成功安装。"));
 }
 
 void WindowIdFilterController::setNotice(const QString& notice)
@@ -324,6 +377,20 @@ void WindowIdFilterController::setNotice(const QString& notice)
         return;
     m_notice = notice;
     emit noticeChanged();
+}
+
+bool WindowIdFilterController::prepareClose()
+{
+    if (!_hook_data.is_hooked)
+        return true;
+
+    if (!unhook()) {
+        setNotice(QStringLiteral("还原HOOK或释放远程内存失败。窗口将保持打开，请确认目标进程仍在运行后重试。"));
+        return false;
+    }
+
+    setNotice(QString());
+    return true;
 }
 
 bool WindowIdFilterController::hook(DWORD pid)

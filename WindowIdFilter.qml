@@ -21,9 +21,56 @@ ApplicationWindow {
 
     Component.onCompleted: controller.bindWindow(win)
 
+    // 关闭只隐藏，实例留给主窗口复用；关闭前先确认并清理 HOOK
     onClosing: function(close) {
         close.accepted = false
-        hide()
+        confirmDialog.open()
+    }
+
+    Dialog {
+        id: confirmDialog
+        anchors.centerIn: parent
+        modal: true
+        focus: true
+        closePolicy: Popup.NoAutoClose
+        padding: 18
+        background: Rectangle {
+            color: "#122033"
+            radius: 10
+            border.color: "#3ee0ff"
+        }
+        contentItem: ColumnLayout {
+            spacing: 16
+            Text {
+                Layout.preferredWidth: 320
+                text: "是否确认关闭？关闭后过滤数据不可恢复"
+                color: "#e7f2ff"
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                Item { Layout.fillWidth: true }
+                NeonButton {
+                    text: "取消"
+                    implicitWidth: 96
+                    onClicked: confirmDialog.close()
+                }
+                NeonButton {
+                    text: "确认"
+                    primary: true
+                    accent: "#ff4fd8"
+                    implicitWidth: 96
+                    onClicked: {
+                        // 清理失败时留在窗口内，提示由 setNotice 显示
+                        if (!controller.prepareClose())
+                            return
+                        confirmDialog.close()
+                        win.hide()
+                    }
+                }
+            }
+        }
     }
 
     component TableHeader: Rectangle {
@@ -179,11 +226,14 @@ ApplicationWindow {
                             widths: [140, 140]
                         }
                         ListView {
+                            id: messageView
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             clip: true
                             model: controller.messages
                             boundsBehavior: Flickable.StopAtBounds
+                            // 新消息到达时跟随到底部，只在新行数增加时触发
+                            onCountChanged: positionViewAtEnd()
                             delegate: Rectangle {
                                 required property string time
                                 required property string kind

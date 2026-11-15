@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAbstractListModel>
+#include <QAbstractNativeEventFilter>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -122,7 +123,7 @@ private:
     std::vector<Row> m_rows;
 };
 
-class WindowIdFilterController : public QObject
+class WindowIdFilterController : public QObject, public QAbstractNativeEventFilter
 {
     Q_OBJECT
     QML_ELEMENT
@@ -133,6 +134,7 @@ class WindowIdFilterController : public QObject
 
 public:
     explicit WindowIdFilterController(QObject* parent = nullptr);
+    ~WindowIdFilterController() override;
 
     QString processName() const;
     void setProcessName(const QString& name);
@@ -142,14 +144,19 @@ public:
 
     Q_INVOKABLE void setFilterActive(int row, bool active);
     Q_INVOKABLE void startHook();
+    Q_INVOKABLE bool prepareClose();
     Q_INVOKABLE void bindWindow(QWindow* window);
 
 signals:
     void processNameChanged();
     void noticeChanged();
 
+protected:
+    bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override;
+
 private:
     void setNotice(const QString& notice);
+    void handleWindowIdMessage(quint32 windowId);
 
     QString m_processName = QStringLiteral("DFO.exe");
     QString m_notice;
