@@ -1,5 +1,9 @@
 #include "windowidfilter.h"
 #include "driver/PeaceDriverAPI.h"
+#include "hook/bytecode.h"
+#include "hook/cpu.h"
+#include "hook/format.h"
+#include "hook/memprotect.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -9,23 +13,6 @@ namespace {
 constexpr ULONG64 kRemoteBufferSize = 0x1000;
 constexpr ULONG64 HOOK_ADDRESS      = 0x1466CCE00;
 constexpr BOOL    USE_EPT_HOOK      = TRUE;
-
-bool isExecutableProtection(ULONG protection)
-{
-    if ((protection & PAGE_GUARD) != 0) {
-        return false;
-    }
-
-    switch (protection & 0xFF) {
-    case PAGE_EXECUTE:
-    case PAGE_EXECUTE_READ:
-    case PAGE_EXECUTE_READWRITE:
-    case PAGE_EXECUTE_WRITECOPY:
-        return true;
-    default:
-        return false;
-    }
-}
 
 QString formatBytesHex(const void* data, size_t len)
 {
@@ -196,7 +183,7 @@ void MessageLogModel::clear()
 }
 
 WindowIdFilterController::WindowIdFilterController(QObject* parent)
-    : QObject(parent)
+    : FilterHost(parent)
 {
     QCoreApplication::instance()->installNativeEventFilter(this);
 }
@@ -237,25 +224,7 @@ void WindowIdFilterController::handleWindowIdMessage(quint32 windowId, quint64 r
         QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss.zzz")),
         formatId(windowId),
         m_filters.nameForId(windowId),
-        QStringLiteral("0x%1").arg(retAddress, 16, 16, QChar('0')).toUpper());
-}
-
-QString WindowIdFilterController::processName() const
-{
-    return m_processName;
-}
-
-void WindowIdFilterController::setProcessName(const QString& name)
-{
-    if (m_processName == name)
-        return;
-    m_processName = name;
-    emit processNameChanged();
-}
-
-QString WindowIdFilterController::notice() const
-{
-    return m_notice;
+        formatAddress(retAddress));
 }
 
 QAbstractListModel* WindowIdFilterController::filters()
@@ -271,26 +240,6 @@ QAbstractListModel* WindowIdFilterController::messages()
 void WindowIdFilterController::setFilterActive(int row, bool active)
 {
     m_filters.setActive(row, active);
-}
-
-void WindowIdFilterController::bindWindow(QWindow* window)
-{
-    m_hostWindow = window;
-}
-
-HWND WindowIdFilterController::hostWindowHandle() const
-{
-    QWindow* window = m_hostWindow;
-    if (!window) {
-        for (QObject* object = parent(); object; object = object->parent()) {
-            window = qobject_cast<QWindow*>(object);
-            if (window)
-                break;
-        }
-    }
-    if (!window)
-        return nullptr;
-    return reinterpret_cast<HWND>(window->winId());
 }
 
 void WindowIdFilterController::startHook()
@@ -373,14 +322,6 @@ void WindowIdFilterController::startHook()
     // 禁用开始HOOK按钮
 
     setNotice(QStringLiteral("HOOK已成功安装。"));
-}
-
-void WindowIdFilterController::setNotice(const QString& notice)
-{
-    if (m_notice == notice)
-        return;
-    m_notice = notice;
-    emit noticeChanged();
 }
 
 bool WindowIdFilterController::prepareClose()

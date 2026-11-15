@@ -28,6 +28,15 @@ set(VMP_FILES
     vmp/VMProtectSDK.h
 )
 
+set(HOOK_FILES
+    src/hook/bytecode.h
+    src/hook/cpu.h
+    src/hook/filterhost.cpp
+    src/hook/filterhost.h
+    src/hook/format.h
+    src/hook/memprotect.h
+)
+
 set(FILTER_FILES
     src/windowidfilter.cpp
     src/windowidfilter.h
@@ -53,11 +62,12 @@ qt_add_qml_module(appQuickFilter
     URI QuickFilter
     VERSION 1.0
     QML_FILES ${QML_FILES}
-    SOURCES ${FILTER_FILES}
+    SOURCES ${FILTER_FILES} ${HOOK_FILES}
 )
 
 source_group("app" FILES ${APP_FILES})
 source_group("src" FILES ${FILTER_FILES})
+source_group("src\\hook" FILES ${HOOK_FILES})
 source_group("driver" FILES ${DRIVER_FILES})
 source_group("helper" FILES ${HELPER_FILES})
 source_group("vmp" FILES ${VMP_FILES})

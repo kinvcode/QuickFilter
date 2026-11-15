@@ -1,11 +1,10 @@
 #pragma once
 
+#include "hook/filterhost.h"
+
 #include <QAbstractListModel>
 #include <QAbstractNativeEventFilter>
-#include <QObject>
-#include <QPointer>
 #include <QString>
-#include <QWindow>
 #include <QtQml/qqmlregistration.h>
 #include <vector>
 #include <Windows.h>
@@ -44,40 +43,27 @@ private:
     std::vector<Row> m_rows;
 };
 
-class PacketFilterController : public QObject, public QAbstractNativeEventFilter
+class PacketFilterController : public FilterHost, public QAbstractNativeEventFilter
 {
     Q_OBJECT
     QML_ELEMENT
-    Q_PROPERTY(QString processName READ processName WRITE setProcessName NOTIFY processNameChanged)
-    Q_PROPERTY(QString notice READ notice NOTIFY noticeChanged)
     Q_PROPERTY(QAbstractListModel* messages READ messages CONSTANT)
 
 public:
     explicit PacketFilterController(QObject* parent = nullptr);
     ~PacketFilterController() override;
 
-    QString processName() const;
-    void setProcessName(const QString& name);
-    QString notice() const;
     QAbstractListModel* messages();
 
     Q_INVOKABLE void startHook();
     Q_INVOKABLE bool prepareClose();
-    Q_INVOKABLE void bindWindow(QWindow* window);
-
-signals:
-    void processNameChanged();
-    void noticeChanged();
 
 protected:
     bool nativeEventFilter(const QByteArray& eventType, void* message, qintptr* result) override;
 
 private:
-    void setNotice(const QString& notice);
     void handlePacketMessage(quint64 pointer);
 
-    QString m_processName = QStringLiteral("DFO.exe");
-    QString m_notice;
     quint32 m_sequence = 0;
     PacketLogModel m_messages;
 
@@ -96,7 +82,4 @@ private:
 
     bool hook(DWORD pid);
     bool unhook();
-    HWND hostWindowHandle() const;
-
-    QPointer<QWindow> m_hostWindow;
 };
