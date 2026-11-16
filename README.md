@@ -2,23 +2,21 @@
 
 
 ```mermaid
-flowchart TD
-    subgraph R3["3环"]
-        direction LR
-        V1["源代码页"]
-        V2["影子页"]
-        V3["汇编页"]
-    end
-
-    subgraph R0["0环"]
-        direction LR
-        P1["源代码物理页"]
-        P2["影子物理页"]
-        P3["汇编物理页"]
-    end
-
-    V1 -->|"读"| P1
-    V1 -->|"执行"| P2
-    V2 -->|"读写执行"| P2
-    V3 -->|"读写执行"| P3
+flowchart TB
+  subgraph ring3["3环"]
+    direction LR
+    src["源代码页"]
+    shadow["影子页"]
+    asm["汇编页"]
+  end
+  subgraph ring0["0环"]
+    direction LR
+    srcP["源代码物理页"]
+    shadowP["影子物理页"]
+    asmP["汇编物理页"]
+  end
+  src -->|读| srcP
+  src -->|执行| shadowP
+  shadow -->|读写执行| shadowP
+  asm -->|读写执行| asmP
 ```
