@@ -11,6 +11,16 @@
 namespace {
 
 constexpr ULONG64 kRemoteBufferSize = 0x1000;
+constexpr ULONG64 kPageSize = 0x1000;
+
+// 补丁必须整段落在同一 4KB 页内。EPT 只切换 hook 地址所在的那一个页帧
+bool hookCrossesPage(ULONG64 address, size_t codeSize)
+{
+    if (codeSize > kPageSize)
+        return true;
+    const ULONG64 offset = address & (kPageSize - 1);
+    return offset + static_cast<ULONG64>(codeSize) > kPageSize;
+}
 
 }
 
@@ -60,6 +70,16 @@ void HookControl::startHook()
     }
     if (!isExecutableProtection(meminfo)) {
         setNotice(QStringLiteral("HOOK地址所在内存不可执行，请检查目标函数地址。"));
+        return;
+    }
+
+    if (hookCrossesPage(target_address, hookCodeSize())) {
+        const ULONG64 offset = target_address & (kPageSize - 1);
+        qDebug() << "HOOK跨页，拒绝安装。地址："
+                 << QString::number(target_address, 16).toUpper()
+                 << " 页内偏移：" << QString::number(offset, 16).toUpper()
+                 << " 长度：" << hookCodeSize();
+        setNotice(QStringLiteral("HOOK指令跨页，已拒绝安装。"));
         return;
     }
 
@@ -133,6 +153,13 @@ bool HookControl::hook(DWORD pid)
 {
     const size_t codeSize = hookCodeSize();
     const ULONG64 hook_address = hookAddress();
+
+    if (hookCrossesPage(hook_address, codeSize)) {
+        qDebug() << "HOOK跨页，拒绝安装。地址："
+                 << QString::number(hook_address, 16).toUpper()
+                 << " 长度：" << codeSize;
+        return false;
+    }
 
     ULONG64 shadowpage_address = 0;
     ULONG64 asmcode_address = 0;
