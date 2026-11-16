@@ -125,6 +125,7 @@ class PacketFilterController : public HookControl, public QAbstractNativeEventFi
     Q_PROPERTY(QAbstractListModel* filters READ filters CONSTANT)
     Q_PROPERTY(int filterCount READ filterCount NOTIFY filtersSummaryChanged)
     Q_PROPERTY(bool allFiltersActive READ allFiltersActive NOTIFY filtersSummaryChanged)
+    Q_PROPERTY(bool collectionPaused READ collectionPaused NOTIFY collectionPausedChanged)
     Q_PROPERTY(QString selectedPacketAddress READ selectedPacketAddress NOTIFY memoryViewChanged)
     Q_PROPERTY(QString memoryHeader READ memoryHeader NOTIFY memoryViewChanged)
     Q_PROPERTY(QStringList memoryAddresses READ memoryAddresses NOTIFY memoryViewChanged)
@@ -139,6 +140,7 @@ public:
     QAbstractListModel* filters();
     int filterCount() const;
     bool allFiltersActive() const;
+    bool collectionPaused() const;
 
     QString selectedPacketAddress() const;
     QString memoryHeader() const;
@@ -147,7 +149,10 @@ public:
     QStringList memoryTextRows() const;
 
     Q_INVOKABLE void clearPackets();
+    Q_INVOKABLE void pauseCollection();
+    Q_INVOKABLE void resumeCollection();
     Q_INVOKABLE void selectPacket(int row);
+    Q_INVOKABLE void setMemoryAddressBase(int row);
     Q_INVOKABLE void setMemoryDisplay(int dataType, bool hexadecimal, int textEncoding);
 
     Q_INVOKABLE int addFilter();
@@ -161,6 +166,7 @@ public:
 
 signals:
     void filtersSummaryChanged();
+    void collectionPausedChanged();
     void memoryViewChanged();
 
 protected:
@@ -178,8 +184,10 @@ private:
     quint32 m_sequence = 0;
     PacketLogModel m_messages;
     PacketFilterModel m_filters;
+    bool m_collectionPaused = false;
     quint64 m_selectedAddress = 0;
     QByteArray m_selectedBytes;
+    int m_addressBaseRow = -1;
     int m_dataType = 0;
     bool m_hexadecimal = true;
     int m_textEncoding = 0;

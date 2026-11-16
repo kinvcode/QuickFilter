@@ -27,6 +27,17 @@ QString formatHex(quint64 value, int width)
     return QStringLiteral("%1").arg(value, width, 16, QLatin1Char('0')).toUpper();
 }
 
+QString formatRelativeOffset(qint64 offset)
+{
+    if (offset == 0)
+        return QStringLiteral("0");
+
+    const QString digits = QString::number(
+        offset < 0 ? static_cast<quint64>(-offset) : static_cast<quint64>(offset),
+        16).toUpper();
+    return (offset < 0 ? QStringLiteral("-0x") : QStringLiteral("+0x")) + digits;
+}
+
 } // namespace
 
 PacketLogModel::PacketLogModel(QObject* parent)
@@ -361,6 +372,9 @@ bool PacketFilterController::nativeEventFilter(const QByteArray& eventType, void
 
 void PacketFilterController::handlePacketMessage(quint64 pointer)
 {
+    if (m_collectionPaused)
+        return;
+
     QByteArray bytes(kPacketReadSize, '\0');
     if (pointer == 0
         || _hook_data.pid == 0
@@ -403,6 +417,11 @@ bool PacketFilterController::allFiltersActive() const
     return m_filters.allActive();
 }
 
+bool PacketFilterController::collectionPaused() const
+{
+    return m_collectionPaused;
+}
+
 QString PacketFilterController::selectedPacketAddress() const
 {
     return m_selectedAddress == 0 ? QString() : formatAddress(m_selectedAddress);
@@ -433,7 +452,24 @@ void PacketFilterController::clearPackets()
     m_messages.clear();
     m_selectedAddress = 0;
     m_selectedBytes.clear();
+    m_addressBaseRow = -1;
     rebuildMemoryView();
+}
+
+void PacketFilterController::pauseCollection()
+{
+    if (m_collectionPaused)
+        return;
+    m_collectionPaused = true;
+    emit collectionPausedChanged();
+}
+
+void PacketFilterController::resumeCollection()
+{
+    if (!m_collectionPaused)
+        return;
+    m_collectionPaused = false;
+    emit collectionPausedChanged();
 }
 
 void PacketFilterController::selectPacket(int row)
@@ -442,12 +478,14 @@ void PacketFilterController::selectPacket(int row)
     if (!packet) {
         m_selectedAddress = 0;
         m_selectedBytes.clear();
+        m_addressBaseRow = -1;
         rebuildMemoryView();
         return;
     }
 
     m_selectedAddress = packet->address;
     m_selectedBytes = packet->bytes;
+    m_addressBaseRow = -1;
     if (m_selectedBytes.isEmpty()
         && m_selectedAddress != 0
         && _hook_data.pid != 0) {
@@ -460,6 +498,15 @@ void PacketFilterController::selectPacket(int row)
             m_selectedBytes.clear();
         }
     }
+    rebuildMemoryView();
+}
+
+void PacketFilterController::setMemoryAddressBase(int row)
+{
+    const int rowCount = (m_selectedBytes.size() + 15) / 16;
+    if (row < 0 || row >= rowCount)
+        return;
+    m_addressBaseRow = row;
     rebuildMemoryView();
 }
 
@@ -566,7 +613,14 @@ void PacketFilterController::rebuildMemoryView()
     m_memoryHeader = headers.join(QLatin1Char(' '));
 
     for (int rowOffset = 0; rowOffset < m_selectedBytes.size(); rowOffset += 16) {
-        m_memoryAddresses.push_back(formatAddress(m_selectedAddress + rowOffset));
+        if (m_addressBaseRow >= 0) {
+            const qint64 relativeOffset =
+                static_cast<qint64>(rowOffset)
+                - static_cast<qint64>(m_addressBaseRow) * 16;
+            m_memoryAddresses.push_back(formatRelativeOffset(relativeOffset));
+        } else {
+            m_memoryAddresses.push_back(formatAddress(m_selectedAddress + rowOffset));
+        }
 
         QStringList values;
         for (int columnOffset = 0; columnOffset < 16; columnOffset += itemSize) {

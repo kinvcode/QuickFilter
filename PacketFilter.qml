@@ -20,6 +20,7 @@ ApplicationWindow {
     property int memoryDataType: 0
     property bool memoryHexadecimal: true
     property int memoryTextEncoding: 0
+    property bool autoScroll: true
 
     PacketFilterController {
         id: controller
@@ -595,7 +596,33 @@ ApplicationWindow {
                                     text: "数据包列表"
                                     color: "#e7f2ff"
                                 }
+                                Text {
+                                    visible: controller.collectionPaused
+                                    text: "已暂停"
+                                    color: "#ffb020"
+                                    font.pixelSize: 11
+                                }
                                 Item { Layout.fillWidth: true }
+                                CheckBox {
+                                    text: "自动滚动"
+                                    checked: true
+                                    palette.windowText: "#9eb4d6"
+                                    onToggled: win.autoScroll = checked
+                                }
+                                NeonButton {
+                                    text: "暂停"
+                                    enabled: !controller.collectionPaused
+                                    implicitHeight: 28
+                                    implicitWidth: 68
+                                    onClicked: controller.pauseCollection()
+                                }
+                                NeonButton {
+                                    text: "恢复"
+                                    enabled: controller.collectionPaused
+                                    implicitHeight: 28
+                                    implicitWidth: 68
+                                    onClicked: controller.resumeCollection()
+                                }
                                 NeonButton {
                                     text: "清空列表"
                                     implicitHeight: 28
@@ -622,7 +649,7 @@ ApplicationWindow {
                             model: controller.messages
                             boundsBehavior: Flickable.StopAtBounds
                             onCountChanged: {
-                                if (count > 0)
+                                if (win.autoScroll && count > 0)
                                     positionViewAtEnd()
                             }
                             delegate: Rectangle {
@@ -991,6 +1018,12 @@ ApplicationWindow {
                                                 verticalAlignment: Text.AlignVCenter
                                                 font.family: "Consolas"
                                                 font.pixelSize: 11
+                                            }
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                acceptedButtons: Qt.LeftButton
+                                                cursorShape: Qt.PointingHandCursor
+                                                onDoubleClicked: controller.setMemoryAddressBase(index)
                                             }
                                         }
                                         Rectangle {
