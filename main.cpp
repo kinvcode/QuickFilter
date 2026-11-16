@@ -18,6 +18,8 @@ QString loadDriverMessage()
             const PeaceDriverLoad::LoadDriverResult result = driver.loadPeaceDriver();
             if (!result.success)
                 message = QString::fromWCharArray(result.message);
+            if(!PeaceDriver::enableVT(true))
+                message = QStringLiteral("VT启动失败");
         }
         if (message.isEmpty() && !PeaceDriver::pingREG())
             message = QStringLiteral("驱动初始化失败");
