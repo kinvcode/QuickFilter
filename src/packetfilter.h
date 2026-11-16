@@ -16,7 +16,7 @@
 
 constexpr UINT WM_PACKET_CUSTOM_MESSAGE = WM_USER + 101;
 constexpr ULONG64 kPacketHookCodeSize = 13;
-constexpr int kPacketReadSize = 1024;
+constexpr int kFilterPatternSize = 1024;
 
 // 发包报文模型：序号、时间、指针、快照和高亮状态
 class PacketLogModel : public QAbstractListModel
@@ -28,7 +28,11 @@ public:
         QString seq;
         QString time;
         QString pointer;
+        QString type1;
+        QString type2;
+        QString lengthText;
         quint64 address = 0;
+        quint16 packetLength = 0;
         QByteArray bytes;
         bool highlighted = false;
     };
@@ -37,6 +41,9 @@ public:
         SeqRole = Qt::UserRole + 1,
         TimeRole,
         PointerRole,
+        Type1Role,
+        Type2Role,
+        LengthRole,
         HighlightedRole
     };
 
@@ -69,7 +76,7 @@ public:
         bool active = false;
         QString name = QStringLiteral("新滤镜");
         Behavior behavior = HighlightBehavior;
-        std::array<qint16, kPacketReadSize> pattern = {};
+        std::array<qint16, kFilterPatternSize> pattern = {};
 
         Entry()
         {

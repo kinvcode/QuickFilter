@@ -637,8 +637,8 @@ ApplicationWindow {
 
                         TableHeader {
                             Layout.fillWidth: true
-                            titles: ["序号", "时间", "缓冲区指针"]
-                            widths: [80, 180]
+                            titles: ["序号", "时间", "缓冲区指针", "类型1", "类型2", "包长"]
+                            widths: [70, 130, -1, 90, 80, 80]
                         }
 
                         ListView {
@@ -656,6 +656,9 @@ ApplicationWindow {
                                 required property string seq
                                 required property string time
                                 required property string pointer
+                                required property string type1
+                                required property string type2
+                                required property string packetLength
                                 required property bool highlighted
                                 required property int index
                                 width: ListView.view.width
@@ -670,7 +673,7 @@ ApplicationWindow {
                                 Row {
                                     anchors.fill: parent
                                     Text {
-                                        width: 80
+                                        width: 70
                                         height: 28
                                         leftPadding: 8
                                         text: seq
@@ -679,7 +682,7 @@ ApplicationWindow {
                                         font.pixelSize: 12
                                     }
                                     Text {
-                                        width: 180
+                                        width: 130
                                         height: 28
                                         leftPadding: 8
                                         text: time
@@ -689,7 +692,7 @@ ApplicationWindow {
                                         font.pixelSize: 12
                                     }
                                     Text {
-                                        width: Math.max(40, parent.width - 260)
+                                        width: Math.max(80, parent.width - 450)
                                         height: 28
                                         leftPadding: 8
                                         rightPadding: 4
@@ -697,6 +700,36 @@ ApplicationWindow {
                                         color: "#3ee0ff"
                                         verticalAlignment: Text.AlignVCenter
                                         elide: Text.ElideRight
+                                        font.pixelSize: 12
+                                        font.family: "Consolas"
+                                    }
+                                    Text {
+                                        width: 90
+                                        height: 28
+                                        text: type1
+                                        color: "#e7f2ff"
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                        font.pixelSize: 12
+                                        font.family: "Consolas"
+                                    }
+                                    Text {
+                                        width: 80
+                                        height: 28
+                                        text: type2
+                                        color: "#e7f2ff"
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                        font.pixelSize: 12
+                                        font.family: "Consolas"
+                                    }
+                                    Text {
+                                        width: 80
+                                        height: 28
+                                        text: packetLength
+                                        color: "#ffcf5a"
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
                                         font.pixelSize: 12
                                         font.family: "Consolas"
                                     }
@@ -889,6 +922,13 @@ ApplicationWindow {
 
                 Rectangle {
                     id: memoryPanel
+                    readonly property real addressColumnWidth: 154
+                    readonly property real dataColumnWidth:
+                        Math.max(420, controller.memoryHeader.length * 8 + 24)
+                    readonly property real textColumnWidth: 180
+                    readonly property real rowContentWidth:
+                        addressColumnWidth + dataColumnWidth + textColumnWidth
+
                     Layout.columnSpan: 8
                     Layout.fillWidth: true
                     Layout.fillHeight: true
@@ -935,69 +975,77 @@ ApplicationWindow {
                             }
                         }
 
-                        ScrollView {
+                        Item {
+                            Layout.fillWidth: true
+                            implicitHeight: 32
+                            clip: true
+
+                            Row {
+                                x: -memoryScroll.contentX
+                                width: memoryPanel.rowContentWidth
+                                height: 32
+                                Rectangle {
+                                    width: memoryPanel.addressColumnWidth
+                                    height: 32
+                                    color: "#122033"
+                                    border.color: "#1c314d"
+                                    Text {
+                                        anchors.fill: parent
+                                        leftPadding: 8
+                                        text: "地址"
+                                        color: "#9eb4d6"
+                                        verticalAlignment: Text.AlignVCenter
+                                        font.pixelSize: 11
+                                    }
+                                }
+                                Rectangle {
+                                    width: memoryPanel.dataColumnWidth
+                                    height: 32
+                                    color: "#122033"
+                                    border.color: "#1c314d"
+                                    Text {
+                                        anchors.fill: parent
+                                        leftPadding: 10
+                                        text: controller.memoryHeader
+                                        color: "#9eb4d6"
+                                        verticalAlignment: Text.AlignVCenter
+                                        font.family: "Consolas"
+                                        font.pixelSize: 11
+                                    }
+                                }
+                                Rectangle {
+                                    width: memoryPanel.textColumnWidth
+                                    height: 32
+                                    color: "#122033"
+                                    border.color: "#1c314d"
+                                    Text {
+                                        anchors.fill: parent
+                                        leftPadding: 10
+                                        text: win.memoryTextEncoding === 0
+                                            ? "ASCII"
+                                            : "UNICODE (UTF-16)"
+                                        color: "#9eb4d6"
+                                        verticalAlignment: Text.AlignVCenter
+                                        font.pixelSize: 11
+                                    }
+                                }
+                            }
+                        }
+
+                        Flickable {
                             id: memoryScroll
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             clip: true
-                            contentWidth: Math.max(availableWidth, memoryContent.width)
+                            contentWidth: Math.max(width, memoryContent.width)
                             contentHeight: memoryContent.implicitHeight
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar {}
+                            ScrollBar.horizontal: ScrollBar {}
 
                             Column {
                                 id: memoryContent
-                                readonly property real addressWidth: 154
-                                readonly property real dataWidth:
-                                    Math.max(420, controller.memoryHeader.length * 8 + 24)
-                                readonly property real textWidth: 180
-                                width: addressWidth + dataWidth + textWidth
-
-                                Row {
-                                    width: memoryContent.width
-                                    height: 32
-                                    Rectangle {
-                                        width: memoryContent.addressWidth
-                                        height: 32
-                                        color: "#122033"
-                                        border.color: "#1c314d"
-                                        Text {
-                                            anchors.fill: parent
-                                            leftPadding: 8
-                                            text: "地址"
-                                            color: "#9eb4d6"
-                                            verticalAlignment: Text.AlignVCenter
-                                            font.pixelSize: 11
-                                        }
-                                    }
-                                    Rectangle {
-                                        width: memoryContent.dataWidth
-                                        height: 32
-                                        color: "#122033"
-                                        border.color: "#1c314d"
-                                        Text {
-                                            anchors.fill: parent
-                                            leftPadding: 10
-                                            text: controller.memoryHeader
-                                            color: "#9eb4d6"
-                                            verticalAlignment: Text.AlignVCenter
-                                            font.family: "Consolas"
-                                            font.pixelSize: 11
-                                        }
-                                    }
-                                    Rectangle {
-                                        width: memoryContent.textWidth
-                                        height: 32
-                                        color: "#122033"
-                                        border.color: "#1c314d"
-                                        Text {
-                                            anchors.fill: parent
-                                            leftPadding: 10
-                                            text: win.memoryTextEncoding === 0 ? "ASCII" : "UNICODE (UTF-16)"
-                                            color: "#9eb4d6"
-                                            verticalAlignment: Text.AlignVCenter
-                                            font.pixelSize: 11
-                                        }
-                                    }
-                                }
+                                width: memoryPanel.rowContentWidth
 
                                 Repeater {
                                     model: controller.memoryDataRows
@@ -1007,7 +1055,7 @@ ApplicationWindow {
                                         width: memoryContent.width
                                         height: 26
                                         Rectangle {
-                                            width: memoryContent.addressWidth
+                                            width: memoryPanel.addressColumnWidth
                                             height: 26
                                             color: index % 2 === 0 ? "#0c1424" : "#101828"
                                             Text {
@@ -1027,7 +1075,7 @@ ApplicationWindow {
                                             }
                                         }
                                         Rectangle {
-                                            width: memoryContent.dataWidth
+                                            width: memoryPanel.dataColumnWidth
                                             height: 26
                                             color: index % 2 === 0 ? "#0c1424" : "#101828"
                                             Text {
@@ -1041,7 +1089,7 @@ ApplicationWindow {
                                             }
                                         }
                                         Rectangle {
-                                            width: memoryContent.textWidth
+                                            width: memoryPanel.textColumnWidth
                                             height: 26
                                             color: index % 2 === 0 ? "#0c1424" : "#101828"
                                             Text {
@@ -1063,7 +1111,7 @@ ApplicationWindow {
                     Text {
                         anchors.centerIn: parent
                         visible: controller.memoryDataRows.length === 0
-                        text: "点击数据包行查看 1024 字节内存"
+                        text: "点击数据包行按包长查看内存"
                         color: "#6d7d95"
                     }
                 }

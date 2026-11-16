@@ -13,6 +13,7 @@ namespace {
 
 // 目标发包函数的地址，需按实际特征码替换
 constexpr ULONG64 PACKET_HOOK_ADDRESS = 0x1459DB3EC;
+constexpr int kPacketMetadataSize = 0x12;
 
 template <typename T>
 T readUnaligned(const char* address)
@@ -66,6 +67,12 @@ QVariant PacketLogModel::data(const QModelIndex& index, int role) const
         return row.time;
     case PointerRole:
         return row.pointer;
+    case Type1Role:
+        return row.type1;
+    case Type2Role:
+        return row.type2;
+    case LengthRole:
+        return row.lengthText;
     case HighlightedRole:
         return row.highlighted;
     default:
@@ -79,6 +86,9 @@ QHash<int, QByteArray> PacketLogModel::roleNames() const
         {SeqRole, "seq"},
         {TimeRole, "time"},
         {PointerRole, "pointer"},
+        {Type1Role, "type1"},
+        {Type2Role, "type2"},
+        {LengthRole, "packetLength"},
         {HighlightedRole, "highlighted"},
     };
 }
@@ -243,7 +253,7 @@ QVariantMap PacketFilterModel::details(int row) const
 
     const Entry& entry = m_entries[static_cast<size_t>(row)];
     QVariantList values;
-    values.reserve(kPacketReadSize);
+    values.reserve(kFilterPatternSize);
     for (qint16 value : entry.pattern) {
         values.push_back(value < 0
             ? QString()
@@ -271,9 +281,9 @@ bool PacketFilterModel::update(
     updated.behavior = static_cast<Behavior>(behavior);
     updated.pattern.fill(-1);
 
-    const int count = values.size() < kPacketReadSize
+    const int count = values.size() < kFilterPatternSize
         ? static_cast<int>(values.size())
-        : kPacketReadSize;
+        : kFilterPatternSize;
     for (int i = 0; i < count; ++i) {
         QString text = values.at(i).toString().trimmed();
         if (text.isEmpty())
@@ -375,12 +385,37 @@ void PacketFilterController::handlePacketMessage(quint64 pointer)
     if (m_collectionPaused)
         return;
 
-    QByteArray bytes(kPacketReadSize, '\0');
-    if (pointer == 0
-        || _hook_data.pid == 0
-        || !PeaceDriver::readMemory(
-            _hook_data.pid, pointer, kPacketReadSize, bytes.data())) {
-        bytes.clear();
+    QByteArray metadata(kPacketMetadataSize, '\0');
+    const bool metadataRead =
+        pointer != 0
+        && _hook_data.pid != 0
+        && PeaceDriver::readMemory(
+            _hook_data.pid,
+            pointer,
+            kPacketMetadataSize,
+            metadata.data());
+
+    quint16 type1 = 0;
+    quint16 type2 = 0;
+    quint16 packetLength = 0;
+    QByteArray bytes;
+    if (metadataRead) {
+        type1 = readUnaligned<quint16>(metadata.constData() + 0x1);
+        packetLength = readUnaligned<quint16>(metadata.constData() + 0x3);
+        type2 = readUnaligned<quint16>(metadata.constData() + 0x10);
+
+        if (packetLength > 0) {
+            bytes.resize(packetLength);
+            if (packetLength <= metadata.size()) {
+                std::memcpy(bytes.data(), metadata.constData(), packetLength);
+            } else if (!PeaceDriver::readMemory(
+                           _hook_data.pid,
+                           pointer,
+                           packetLength,
+                           bytes.data())) {
+                bytes.clear();
+            }
+        }
     }
 
     const PacketFilterModel::MatchResult match = m_filters.evaluate(bytes);
@@ -391,7 +426,17 @@ void PacketFilterController::handlePacketMessage(quint64 pointer)
     row.seq = QString::number(++m_sequence);
     row.time = QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss.zzz"));
     row.pointer = formatAddress(pointer);
+    row.type1 = metadataRead
+        ? QStringLiteral("0x") + formatHex(type1, 4)
+        : QStringLiteral("--");
+    row.type2 = metadataRead
+        ? QStringLiteral("0x") + formatHex(type2, 4)
+        : QStringLiteral("--");
+    row.lengthText = metadataRead
+        ? QString::number(packetLength)
+        : QStringLiteral("--");
     row.address = pointer;
+    row.packetLength = packetLength;
     row.bytes = std::move(bytes);
     row.highlighted = match == PacketFilterModel::HighlightMatch;
     m_messages.append(std::move(row));
@@ -488,12 +533,13 @@ void PacketFilterController::selectPacket(int row)
     m_addressBaseRow = -1;
     if (m_selectedBytes.isEmpty()
         && m_selectedAddress != 0
+        && packet->packetLength > 0
         && _hook_data.pid != 0) {
-        m_selectedBytes.resize(kPacketReadSize);
+        m_selectedBytes.resize(packet->packetLength);
         if (!PeaceDriver::readMemory(
                 _hook_data.pid,
                 m_selectedAddress,
-                kPacketReadSize,
+                packet->packetLength,
                 m_selectedBytes.data())) {
             m_selectedBytes.clear();
         }
@@ -716,7 +762,7 @@ std::vector<BYTE> PacketFilterController::buildTrampoline(const HookTrampolineIn
     const ULONG64 PostMessageA = in.postMessage;
 
     // 当前目标点的数据包缓冲区指针保存在 RSI：
-    // lParam 传 RSI，wParam 未使用；界面固定抓取 1024 字节快照。
+    // lParam 传 RSI，wParam 未使用；界面从包头读取 WORD 包长后抓取完整快照。
     std::vector<byte> asmData;
     asmData = asmData + makeByteArray({0x9C});                          // pushfq
     asmData = asmData + makeByteArray({0x50});                          // push rax
