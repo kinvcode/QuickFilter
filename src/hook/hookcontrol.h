@@ -5,14 +5,18 @@
 #include <vector>
 #include <Windows.h>
 
+struct EptHookPageData {
+    ULONG64 shadowpage_address = 0;
+    uint64_t hook_pfn = 0;
+};
+
 // 一次 HOOK 安装后要还原的远程状态。原始字节长度由各窗口自己决定
 struct HookData {
     bool is_hooked = false;
     DWORD pid = 0;
     ULONG64 hook_address = 0;
     ULONG64 allocated_address = 0;
-    ULONG64 shadowpage_address = 0;
-    uint64_t hook_pfn = 0;
+    std::vector<EptHookPageData> pages;
     ULONG64 target_cr3 = 0;
     bool hook_execute_patched = false;
     std::vector<BYTE> raw_bytecode;

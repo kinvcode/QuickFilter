@@ -12,14 +12,28 @@ namespace {
 
 constexpr ULONG64 kRemoteBufferSize = 0x1000;
 constexpr ULONG64 kPageSize = 0x1000;
+constexpr size_t kJumpStubSize = 12;
 
-// 补丁必须整段落在同一 4KB 页内。EPT 只切换 hook 地址所在的那一个页帧
-bool hookCrossesPage(ULONG64 address, size_t codeSize)
+struct PendingHookPage {
+    ULONG64 source_page_address = 0;
+    ULONG64 shadowpage_address = 0;
+    uint64_t hook_pfn = 0;
+    uint64_t shadow_pfn = 0;
+};
+
+// 当前实现支持补丁落在一个页内，或从当前页尾跨到紧邻的下一个页。
+size_t hookPageCount(ULONG64 address, size_t codeSize)
 {
-    if (codeSize > kPageSize)
-        return true;
-    const ULONG64 offset = address & (kPageSize - 1);
-    return offset + static_cast<ULONG64>(codeSize) > kPageSize;
+    if (codeSize == 0)
+        return 0;
+
+    const size_t firstPageBytes =
+        static_cast<size_t>(kPageSize - (address & (kPageSize - 1)));
+    if (codeSize <= firstPageBytes)
+        return 1;
+    if (codeSize - firstPageBytes <= kPageSize)
+        return 2;
+    return 0;
 }
 
 }
@@ -73,14 +87,33 @@ void HookControl::startHook()
         return;
     }
 
-    if (hookCrossesPage(target_address, hookCodeSize())) {
-        const ULONG64 offset = target_address & (kPageSize - 1);
-        qDebug() << "HOOK跨页，拒绝安装。地址："
-                 << QString::number(target_address, 16).toUpper()
-                 << " 页内偏移：" << QString::number(offset, 16).toUpper()
-                 << " 长度：" << hookCodeSize();
-        setNotice(QStringLiteral("HOOK指令跨页，已拒绝安装。"));
+    const size_t code_size = hookCodeSize();
+    if (code_size < kJumpStubSize) {
+        setNotice(QStringLiteral("HOOK覆盖长度不足12字节，无法写入跳转指令。"));
         return;
+    }
+
+    const size_t page_count = hookPageCount(target_address, code_size);
+    if (page_count == 0) {
+        setNotice(QStringLiteral("HOOK补丁超过两个4KB页面，暂不支持安装。"));
+        return;
+    }
+
+    if (page_count == 2) {
+        const ULONG64 second_page_address =
+            (target_address & ~(kPageSize - 1)) + kPageSize;
+        ULONG second_meminfo = 0;
+        if (!PeaceDriver::queryMemory(target_pid, second_page_address, second_meminfo)
+            || !isExecutableProtection(second_meminfo)) {
+            setNotice(QStringLiteral("HOOK跨页后的第二个页面不可执行，无法安装。"));
+            return;
+        }
+
+        qDebug() << "检测到HOOK跨页，将安装两个影子页。地址："
+                 << QString::number(target_address, 16).toUpper()
+                 << " 页内偏移："
+                 << QString::number(target_address & (kPageSize - 1), 16).toUpper()
+                 << " 长度：" << code_size;
     }
 
     qDebug() << "目标PID：" << target_pid;
@@ -120,30 +153,40 @@ bool HookControl::unhook()
     }
 
     if (_hook_data.is_hooked) {
-        if (_hook_data.hook_pfn != 0) {
-            qDebug() << "EPT HOOK卸载";
-            const uint64_t hook_pfn = _hook_data.hook_pfn;
-            for_each_cpu([hook_pfn](uint32_t cpu_id) {
-                Q_UNUSED(cpu_id);
-                PeaceDriver::remove_ept_hook(hook_pfn);
-            });
-        }
+        qDebug() << "EPT HOOK卸载，页面数：" << _hook_data.pages.size();
+        for_each_cpu([this](uint32_t cpu_id) {
+            Q_UNUSED(cpu_id);
+            for (const EptHookPageData& page : _hook_data.pages) {
+                if (page.hook_pfn != 0)
+                    PeaceDriver::remove_ept_hook(page.hook_pfn);
+            }
+        });
         _hook_data.is_hooked = false;
     }
 
-    if (_hook_data.shadowpage_address != 0) {
-        qDebug() << "释放影子页";
-        if (!PeaceDriver::freeMemory(_hook_data.pid, _hook_data.shadowpage_address))
-            return false;
-        _hook_data.shadowpage_address = 0;
+    bool released = true;
+    for (EptHookPageData& page : _hook_data.pages) {
+        if (page.shadowpage_address == 0)
+            continue;
+
+        qDebug() << "释放影子页："
+                 << QString::number(page.shadowpage_address, 16).toUpper();
+        if (PeaceDriver::freeMemory(_hook_data.pid, page.shadowpage_address))
+            page.shadowpage_address = 0;
+        else
+            released = false;
     }
 
     if (_hook_data.allocated_address != 0) {
         qDebug() << "释放汇编页";
-        if (!PeaceDriver::freeMemory(_hook_data.pid, _hook_data.allocated_address))
-            return false;
-        _hook_data.allocated_address = 0;
+        if (PeaceDriver::freeMemory(_hook_data.pid, _hook_data.allocated_address))
+            _hook_data.allocated_address = 0;
+        else
+            released = false;
     }
+
+    if (!released)
+        return false;
 
     _hook_data = {};
     return true;
@@ -153,36 +196,41 @@ bool HookControl::hook(DWORD pid)
 {
     const size_t codeSize = hookCodeSize();
     const ULONG64 hook_address = hookAddress();
+    const size_t page_count = hookPageCount(hook_address, codeSize);
 
-    if (hookCrossesPage(hook_address, codeSize)) {
-        qDebug() << "HOOK跨页，拒绝安装。地址："
+    if (codeSize < kJumpStubSize || page_count == 0) {
+        qDebug() << "HOOK覆盖范围无效。地址："
                  << QString::number(hook_address, 16).toUpper()
-                 << " 长度：" << codeSize;
+                 << " 长度：" << codeSize
+                 << " 最小长度：" << kJumpStubSize;
         return false;
     }
 
-    ULONG64 shadowpage_address = 0;
+    std::vector<PendingHookPage> pages(page_count);
     ULONG64 asmcode_address = 0;
-    uint64_t hook_pfn = 0;
-    uint64_t shadow_pfn = 0;
-    bool ept_installed = false;
+    bool ept_install_started = false;
     ULONG64 target_cr3 = 0;
 
     const auto cleanupPartial = [&]() {
-        if (ept_installed && hook_pfn != 0) {
-            for_each_cpu([hook_pfn](uint32_t cpu_id) {
+        if (ept_install_started) {
+            for_each_cpu([&pages](uint32_t cpu_id) {
                 Q_UNUSED(cpu_id);
-                PeaceDriver::remove_ept_hook(hook_pfn);
+                for (const PendingHookPage& page : pages) {
+                    if (page.hook_pfn != 0)
+                        PeaceDriver::remove_ept_hook(page.hook_pfn);
+                }
             });
-            ept_installed = false;
+            ept_install_started = false;
         }
         if (asmcode_address != 0) {
             PeaceDriver::freeMemory(pid, asmcode_address);
             asmcode_address = 0;
         }
-        if (shadowpage_address != 0) {
-            PeaceDriver::freeMemory(pid, shadowpage_address);
-            shadowpage_address = 0;
+        for (PendingHookPage& page : pages) {
+            if (page.shadowpage_address != 0) {
+                PeaceDriver::freeMemory(pid, page.shadowpage_address);
+                page.shadowpage_address = 0;
+            }
         }
     };
 
@@ -198,10 +246,9 @@ bool HookControl::hook(DWORD pid)
         return false;
     }
 
-    const uintptr_t hook_page_start = hook_address & ~0xFFF;
-    void* hook_page_ptr = reinterpret_cast<void*>(hook_page_start);
-    const uintptr_t hook_offset = hook_address - reinterpret_cast<uintptr_t>(hook_page_ptr);
-    qDebug() << "HOOK页面起始地址：" << QString::number(static_cast<uint64_t>(reinterpret_cast<uintptr_t>(hook_page_ptr)), 16).toUpper();
+    const ULONG64 hook_page_start = hook_address & ~(kPageSize - 1);
+    const size_t hook_offset = static_cast<size_t>(hook_address - hook_page_start);
+    qDebug() << "HOOK页面起始地址：" << QString::number(hook_page_start, 16).toUpper();
     qDebug() << "HOOK函数偏移：" << QString::number(static_cast<uint64_t>(hook_offset), 16).toUpper();
 
     target_cr3 = PeaceDriver::query_process_cr3(pid);
@@ -214,47 +261,47 @@ bool HookControl::hook(DWORD pid)
         return false;
     }
 
-    const uint64_t hook_phys_addr = PeaceDriver::get_physical_address(target_cr3, hook_page_ptr);
-    if (!hook_phys_addr) {
-        qDebug() << "无法获取HOOK物理页，后续操作中断";
-        return false;
-    }
-    qDebug() << "HOOK物理地址：" << QString::number(hook_phys_addr, 16).toUpper();
+    auto hook_page_cache = std::make_unique<BYTE[]>(kPageSize);
+    for (size_t i = 0; i < pages.size(); ++i) {
+        PendingHookPage& page = pages[i];
+        page.source_page_address = hook_page_start + i * kPageSize;
 
-    hook_pfn = hook_phys_addr >> 12;
-    qDebug() << "HOOK物理页帧号(PFN)：" << QString::number(hook_pfn, 16).toUpper();
+        const uint64_t hook_phys_addr = PeaceDriver::get_physical_address(
+            target_cr3, reinterpret_cast<void*>(page.source_page_address));
+        if (!hook_phys_addr) {
+            qDebug() << "无法获取HOOK物理页，页面：" << i;
+            cleanupPartial();
+            return false;
+        }
+        page.hook_pfn = hook_phys_addr >> 12;
 
-    shadowpage_address = PeaceDriver::allocMemory(pid, kRemoteBufferSize);
-    if (shadowpage_address == 0) {
-        qDebug() << "申请影子内存失败";
-        return false;
-    }
-    qDebug() << "申请影子空间：" << QString::number(shadowpage_address, 16).toUpper();
+        page.shadowpage_address = PeaceDriver::allocMemory(pid, kRemoteBufferSize);
+        if (page.shadowpage_address == 0) {
+            qDebug() << "申请影子内存失败，页面：" << i;
+            cleanupPartial();
+            return false;
+        }
 
-    auto hook_page_cache = std::make_unique<byte[]>(0x1000);
-    if (!PeaceDriver::readMemory(pid, reinterpret_cast<uint64_t>(hook_page_ptr), 0x1000, hook_page_cache.get())) {
-        qDebug() << "读取HOOK页面失败";
-        cleanupPartial();
-        return false;
-    }
+        if (!PeaceDriver::readMemory(
+                pid, page.source_page_address, kPageSize, hook_page_cache.get())) {
+            qDebug() << "读取HOOK页面失败，页面：" << i;
+            cleanupPartial();
+            return false;
+        }
+        if (!PeaceDriver::writeMemory(
+                pid, page.shadowpage_address, kPageSize, hook_page_cache.get())) {
+            qDebug() << "写入影子页失败，页面：" << i;
+            cleanupPartial();
+            return false;
+        }
 
-    qDebug() << "准备复制页面数据";
-    if (!PeaceDriver::writeMemory(pid, shadowpage_address, 0x1000, hook_page_cache.get())) {
-        qDebug() << "写入影子页失败";
-        cleanupPartial();
-        return false;
+        qDebug() << "HOOK页面" << i
+                 << "虚拟地址："
+                 << QString::number(page.source_page_address, 16).toUpper()
+                 << " 原PFN：" << QString::number(page.hook_pfn, 16).toUpper()
+                 << " 影子地址："
+                 << QString::number(page.shadowpage_address, 16).toUpper();
     }
-
-    const uint64_t shadow_phys_addr = PeaceDriver::get_physical_address(
-        target_cr3, reinterpret_cast<void*>(shadowpage_address));
-    if (!shadow_phys_addr) {
-        qDebug() << "无法获取影子页物理地址，后续操作中断";
-        cleanupPartial();
-        return false;
-    }
-    qDebug() << "影子页物理地址：" << QString::number(shadow_phys_addr, 16).toUpper();
-    shadow_pfn = shadow_phys_addr >> 12;
-    qDebug() << "影子页物理页帧号(PFN)：" << QString::number(shadow_pfn, 16).toUpper();
 
     asmcode_address = PeaceDriver::allocMemory(pid, kRemoteBufferSize);
     if (asmcode_address == 0) {
@@ -301,66 +348,107 @@ bool HookControl::hook(DWORD pid)
     }
 
     // mov rax, imm64; jmp rax。剩下的字节填 nop，长度等于覆盖的原始指令
-    std::vector<BYTE> jmp_code(codeSize, 0);
+    std::vector<BYTE> jmp_code(codeSize, 0x90);
     jmp_code[0] = 0x48;
     jmp_code[1] = 0xB8;
     const ULONG64 jmp_address = asmcode_address;
     memcpy(&jmp_code[2], &jmp_address, 8);
     jmp_code[10] = 0xFF;
     jmp_code[11] = 0xE0;
-    for (size_t i = 12; i < codeSize; ++i)
-        jmp_code[i] = 0x90;
 
-    const ULONG64 shadow_patch_va = shadowpage_address + hook_offset;
-    if (!PeaceDriver::writeMemory(pid, shadow_patch_va, codeSize, jmp_code.data())) {
-        qDebug() << "写入影子页HOOK指令失败";
+    // 已写入补丁的字节数，从 jmp_code 开头算
+    size_t patch_offset = 0;
+    // 第一页从钩子点的页内偏移开始写
+    size_t page_offset = hook_offset;
+    for (size_t i = 0; i < pages.size() && patch_offset < codeSize; ++i) {
+        // 补丁还没写完的字节数
+        const size_t bytes_remaining = codeSize - patch_offset;
+
+        // 当前影子页从写入点到页尾的剩余空间
+        const size_t page_remaining = static_cast<size_t>(kPageSize) - page_offset;
+
+        // 本页实际写入长度，不越过页尾
+        const size_t chunk_size = bytes_remaining < page_remaining ? bytes_remaining : page_remaining;
+
+        // 当前影子页上的写入地址
+        const ULONG64 shadow_patch_va = pages[i].shadowpage_address + page_offset;
+
+        if (!PeaceDriver::writeMemory(pid, shadow_patch_va, chunk_size, jmp_code.data() + patch_offset))
+        {
+            // 记录失败的页序号和本页分片长度
+            qDebug() << "写入影子页HOOK指令失败，页面：" << i << " 分片长度：" << chunk_size;
+            cleanupPartial();                                   // 释放已申请的影子页和汇编页
+            return false;                                       // 本页写入失败，停止安装
+        }
+
+        // 推进补丁游标，下一次从剩余字节继续
+        patch_offset += chunk_size;
+        // 下一页从页首接着写
+        page_offset = 0;
+    }
+
+    // 校验补丁长度是否与hook代码长度一致
+    if (patch_offset != codeSize) {
+        qDebug() << "HOOK补丁未完整写入影子页";
         cleanupPartial();
         return false;
     }
 
-    const uint64_t shadow_phys_addr_after = PeaceDriver::get_physical_address(
-        target_cr3, reinterpret_cast<void*>(shadowpage_address));
-    if (!shadow_phys_addr_after) {
-        qDebug() << "patch 后无法解析影子页物理地址";
-        cleanupPartial();
-        return false;
+    for (size_t i = 0; i < pages.size(); ++i) {
+        PendingHookPage& page = pages[i];
+        const uint64_t shadow_phys_addr =
+            PeaceDriver::get_physical_address(
+                target_cr3,
+                reinterpret_cast<void*>(page.shadowpage_address));
+        if (!shadow_phys_addr) {
+            qDebug() << "patch 后无法解析影子页物理地址，页面：" << i;
+            cleanupPartial();
+            return false;
+        }
+        page.shadow_pfn = shadow_phys_addr >> 12;
+        qDebug() << "影子页" << i << "PFN："
+                 << QString::number(page.shadow_pfn, 16).toUpper();
     }
-    shadow_pfn = shadow_phys_addr_after >> 12;
 
-    qDebug() << "开始安装EPT HOOK";
+    qDebug() << "开始安装EPT HOOK，页面数：" << pages.size();
 
     SYSTEM_INFO cpu_info = {};
     GetSystemInfo(&cpu_info);
     const uint32_t cpu_count = cpu_info.dwNumberOfProcessors;
-    uint32_t success_count = 0;
+    size_t success_count = 0;
 
+    ept_install_started = true;
     for_each_cpu([&](uint32_t cpu_id) {
-        if (PeaceDriver::install_ept_hook(hook_pfn, shadow_pfn)) {
-            qDebug() << "EPT安装成功，CPU：" + QString::number(cpu_id);
-            ++success_count;
-        } else {
-            qDebug() << "EPT安装失败，CPU：" + QString::number(cpu_id);
+        for (size_t i = 0; i < pages.size(); ++i) {
+            const PendingHookPage& page = pages[i];
+            if (PeaceDriver::install_ept_hook(page.hook_pfn, page.shadow_pfn)) {
+                qDebug() << "EPT安装成功，CPU：" << cpu_id << " 页面：" << i;
+                ++success_count;
+            } else {
+                qDebug() << "EPT安装失败，CPU：" << cpu_id << " 页面：" << i;
+            }
         }
     });
 
-    if (success_count != cpu_count) {
-        for_each_cpu([hook_pfn](uint32_t cpu_id) {
-            Q_UNUSED(cpu_id);
-            PeaceDriver::remove_ept_hook(hook_pfn);
-        });
+    const size_t expected_count =
+        static_cast<size_t>(cpu_count) * pages.size();
+    if (success_count != expected_count) {
         cleanupPartial();
         return false;
     }
 
     qDebug() << "EPT HOOK安装完毕";
-    ept_installed = true;
+    ept_install_started = false;
 
     _hook_data.is_hooked = true;
     _hook_data.pid = pid;
     _hook_data.hook_address = hook_address;
     _hook_data.allocated_address = asmcode_address;
-    _hook_data.shadowpage_address = shadowpage_address;
-    _hook_data.hook_pfn = hook_pfn;
+    _hook_data.pages.reserve(pages.size());
+    for (const PendingHookPage& page : pages) {
+        _hook_data.pages.push_back(
+            {page.shadowpage_address, page.hook_pfn});
+    }
     _hook_data.target_cr3 = target_cr3;
     _hook_data.hook_execute_patched = true;
     _hook_data.raw_bytecode = std::move(raw_bytecode);
